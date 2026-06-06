@@ -1,0 +1,13 @@
+backend/.venv/
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/server.log
+backend/server.err.log
+backend/app/**/__pycache__/
+frontend/node_modules/
+frontend/dist/
+frontend/server.log
+frontend/server.err.log
+.cursorindexingignore
+.specstory/

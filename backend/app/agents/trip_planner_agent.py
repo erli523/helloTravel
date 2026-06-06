@@ -6,15 +6,17 @@ from app.agents.hotel_agent import HotelAgent
 from app.agents.itinerary_agent import PlannerAgent
 from app.agents.weather_agent import WeatherQueryAgent
 from app.models.travel import TravelPlanRequest, TripPlan
+from app.services.mcp_client import AmapMCPToolset
 
 
 class TripPlannerAgent:
     """Coordinates four specialized Agents into one planning workflow."""
 
     def __init__(self) -> None:
-        self.attraction_agent = AttractionSearchAgent()
-        self.weather_agent = WeatherQueryAgent()
-        self.hotel_agent = HotelAgent()
+        self.amap_tools = AmapMCPToolset()
+        self.attraction_agent = AttractionSearchAgent(amap_tools=self.amap_tools)
+        self.weather_agent = WeatherQueryAgent(amap_tools=self.amap_tools)
+        self.hotel_agent = HotelAgent(amap_tools=self.amap_tools)
         self.planner_agent = PlannerAgent()
         self.last_traces: list[AgentTrace] = []
 

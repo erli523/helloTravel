@@ -1,7 +1,7 @@
 """Shared Agent abstractions."""
 
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -33,5 +33,13 @@ class BaseAgent:
     name: str = "base_agent"
     prompt_template: str = ""
 
+    def __init__(self, amap_tools: Any | None = None) -> None:
+        self.amap_tools = amap_tools
+
     def render_prompt(self, **kwargs: object) -> str:
         return self.prompt_template.format(**kwargs)
+
+    def toolset_summary(self) -> str:
+        if self.amap_tools is None:
+            return "No shared MCP toolset attached."
+        return self.amap_tools.describe()

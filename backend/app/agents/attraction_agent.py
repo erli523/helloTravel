@@ -18,6 +18,15 @@ class AttractionSearchAgent(BaseAgent):
             f"[TOOL_CALL:amap_maps_text_search:keywords={keyword},city={request.city}]"
             for keyword in keywords
         ]
+        tool_results = []
+        if self.amap_tools is not None:
+            for keyword in keywords:
+                tool_results.append(
+                    await self.amap_tools.call_tool(
+                        "amap_maps_text_search",
+                        {"keywords": keyword, "city": request.city},
+                    )
+                )
 
         attractions = self._mock_attractions(request, keywords)
         query = f"Search {request.city} attractions for preferences: {preferences}"
@@ -32,7 +41,10 @@ class AttractionSearchAgent(BaseAgent):
                 ),
                 user_query=query,
                 tool_calls=tool_calls,
-                summary=f"Found {len(attractions)} attraction candidates.",
+                summary=(
+                    f"Found {len(attractions)} attraction candidates. "
+                    f"{self._source_summary(tool_results)}"
+                ),
             ),
         )
 
@@ -124,6 +136,11 @@ class AttractionSearchAgent(BaseAgent):
             ) in enumerate(base_data)
         ]
 
+    def _source_summary(self, tool_results: list[dict]) -> str:
+        if not tool_results:
+            return self.toolset_summary()
+        statuses = ", ".join(sorted({item["status"] for item in tool_results}))
+        return f"MCP tool status: {statuses}."
 
-# Backward-compatible alias for older service imports.
+
 AttractionAgent = AttractionSearchAgent

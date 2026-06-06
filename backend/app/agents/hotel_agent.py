@@ -16,6 +16,13 @@ class HotelAgent(BaseAgent):
             "[TOOL_CALL:amap_maps_text_search:"
             f"keywords={request.accommodation} hotel,city={request.city}]"
         )
+        tool_result = None
+        if self.amap_tools is not None:
+            tool_result = await self.amap_tools.call_tool(
+                "amap_maps_text_search",
+                {"keywords": f"{request.accommodation} hotel", "city": request.city},
+            )
+
         price_range, estimated_cost, hotel_type = self._price_profile(request)
         hotels = [
             Hotel(
@@ -50,7 +57,10 @@ class HotelAgent(BaseAgent):
                 ),
                 user_query=f"Search {request.accommodation} hotels in {request.city}.",
                 tool_calls=[tool_call],
-                summary=f"Recommended {len(hotels)} hotels.",
+                summary=(
+                    f"Recommended {len(hotels)} hotels. "
+                    f"{self._source_summary(tool_result)}"
+                ),
             ),
         )
 
@@ -60,3 +70,8 @@ class HotelAgent(BaseAgent):
         if request.budget_level == "premium":
             return "900-1600 CNY/night", 1280, "premium"
         return "500-900 CNY/night", 680, "comfort"
+
+    def _source_summary(self, tool_result: dict | None) -> str:
+        if tool_result is None:
+            return self.toolset_summary()
+        return f"MCP tool status: {tool_result['status']}."

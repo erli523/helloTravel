@@ -59,3 +59,7 @@ npm run dev -- --host 127.0.0.1
 多 Agent 角色划分、提示词、工具调用格式和协作流程见：
 
 [docs/agent_design.md](docs/agent_design.md)
+
+高德地图 MCP 集成、共享 MCP 实例和工具调用流程见：
+
+[docs/amap_mcp_integration.md](docs/amap_mcp_integration.md)

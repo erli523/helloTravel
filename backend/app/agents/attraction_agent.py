@@ -15,7 +15,7 @@ class AttractionSearchAgent(BaseAgent):
         preferences = request.preferences or ["landmark", "local culture"]
         keywords = self._select_keywords(preferences)
         tool_calls = [
-            f"[TOOL_CALL:amap_maps_text_search:keywords={keyword},city={request.city}]"
+            f"[TOOL_CALL:maps_text_search:keywords={keyword},city={request.city}]"
             for keyword in keywords
         ]
         tool_results = []
@@ -23,7 +23,7 @@ class AttractionSearchAgent(BaseAgent):
             for keyword in keywords:
                 tool_results.append(
                     await self.amap_tools.call_tool(
-                        "amap_maps_text_search",
+                        "maps_text_search",
                         {"keywords": keyword, "city": request.city},
                     )
                 )

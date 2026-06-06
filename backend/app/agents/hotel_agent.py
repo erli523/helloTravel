@@ -13,13 +13,13 @@ class HotelAgent(BaseAgent):
 
     async def run(self, request: TravelPlanRequest) -> AgentResult[list[Hotel]]:
         tool_call = (
-            "[TOOL_CALL:amap_maps_text_search:"
+            "[TOOL_CALL:maps_text_search:"
             f"keywords={request.accommodation} hotel,city={request.city}]"
         )
         tool_result = None
         if self.amap_tools is not None:
             tool_result = await self.amap_tools.call_tool(
-                "amap_maps_text_search",
+                "maps_text_search",
                 {"keywords": f"{request.accommodation} hotel", "city": request.city},
             )
 

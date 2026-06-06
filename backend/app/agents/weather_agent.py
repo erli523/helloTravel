@@ -14,11 +14,11 @@ class WeatherQueryAgent(BaseAgent):
     prompt_template = WEATHER_AGENT_PROMPT
 
     async def run(self, request: TravelPlanRequest) -> AgentResult[list[WeatherInfo]]:
-        tool_call = f"[TOOL_CALL:amap_maps_weather:city={request.city}]"
+        tool_call = f"[TOOL_CALL:maps_weather:city={request.city}]"
         tool_result = None
         if self.amap_tools is not None:
             tool_result = await self.amap_tools.call_tool(
-                "amap_maps_weather",
+                "maps_weather",
                 {"city": request.city},
             )
 

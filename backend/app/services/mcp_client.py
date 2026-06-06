@@ -7,15 +7,16 @@ from app.config import Settings, get_settings
 
 
 AMAP_MCP_TOOL_NAMES = [
-    "amap_maps_text_search",
-    "amap_maps_search_detail",
-    "amap_maps_around_search",
-    "amap_maps_direction_walking_by_address",
-    "amap_maps_direction_driving_by_address",
-    "amap_maps_direction_transit_integrated_by_address",
-    "amap_maps_weather",
-    "amap_maps_geocode",
-    "amap_maps_regeocode",
+    "maps_text_search",
+    "maps_search_detail",
+    "maps_around_search",
+    "maps_direction_walking",
+    "maps_direction_driving",
+    "maps_direction_bicycling",
+    "maps_direction_transit_integrated",
+    "maps_weather",
+    "maps_geo",
+    "maps_regeo",
 ]
 
 
@@ -61,7 +62,10 @@ class AmapMCPToolset:
             self.tool = MCPTool(
                 name=self.settings.amap_mcp_name,
                 server_command=self.settings.amap_mcp_command,
-                env={"AMAP_API_KEY": self.settings.amap_api_key},
+                env={
+                    "AMAP_API_KEY": self.settings.amap_api_key,
+                    "AMAP_MAPS_API_KEY": self.settings.amap_api_key,
+                },
                 auto_expand=True,
             )
             expanded = self.tool.get_expanded_tools()

@@ -1,18 +1,5 @@
-export interface TravelPlanRequest {
-  city: string;
-  start_date: string;
-  end_date: string;
-  travelers: number;
-  budget_level: "economy" | "comfort" | "premium";
-  budget?: number | null;
-  preferences: string[];
-  transportation: string;
-  accommodation: string;
-}
-
-export interface TravelPlanResponse {
-  plan: TripPlan;
-}
+export type BudgetLevel = "economy" | "comfort" | "premium";
+export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 
 export interface Location {
   longitude: number;
@@ -32,7 +19,7 @@ export interface Attraction {
 }
 
 export interface Meal {
-  type: "breakfast" | "lunch" | "dinner" | "snack";
+  type: MealType;
   name: string;
   address?: string | null;
   location?: Location | null;
@@ -88,4 +75,38 @@ export interface TripPlan {
   weather_info: WeatherInfo[];
   overall_suggestions: string;
   budget?: Budget | null;
+}
+
+export interface TravelPlanRequest {
+  city: string;
+  start_date: string;
+  end_date: string;
+  travelers: number;
+  budget_level: BudgetLevel;
+  budget?: number | null;
+  preferences: string[];
+  transportation: string;
+  accommodation: string;
+}
+
+export interface TravelPlanResponse {
+  plan: TripPlan;
+}
+
+export interface AgentTrace {
+  agent_name: string;
+  prompt: string;
+  user_query: string;
+  tool_calls: string[];
+  summary: string;
+}
+
+export interface IntegrationStatus {
+  unsplash: {
+    enabled: boolean;
+    available: boolean;
+    base_url: string;
+    reason?: string | null;
+  };
+  amap_mcp: string;
 }

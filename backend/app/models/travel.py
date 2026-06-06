@@ -92,7 +92,7 @@ class WeatherInfo(BaseModel):
     @field_validator("day_temp", "night_temp", mode="before")
     @classmethod
     def parse_temperature(cls, value: object) -> int:
-        """Parse values like 16C, 16°C or 16℃ into integers."""
+        """Parse values like 16C, 16 deg C, 16°C or 16℃ into integers."""
 
         if isinstance(value, str):
             normalized = (
@@ -100,6 +100,8 @@ class WeatherInfo(BaseModel):
                 .replace("℃", "")
                 .replace("°", "")
                 .replace("C", "")
+                .replace("celsius", "")
+                .replace("deg", "")
                 .strip()
             )
             try:

@@ -1,23 +1,60 @@
-import type { TravelPlanRequest, TravelPlanResponse } from "../types/travel";
+import axios from "axios";
 
-const API_BASE_URL = "/api";
+import type {
+  AgentTrace,
+  IntegrationStatus,
+  TravelPlanRequest,
+  TravelPlanResponse,
+  TripPlan
+} from "../types";
+
+export const api = axios.create({
+  baseURL: "/api",
+  timeout: 120000,
+  headers: {
+    "Content-Type": "application/json"
+  }
+});
+
+api.interceptors.request.use(
+  (config) => {
+    console.info("Sending request:", config.method?.toUpperCase(), config.url);
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+api.interceptors.response.use(
+  (response) => {
+    console.info("Received response:", response.status, response.config.url);
+    return response;
+  },
+  (error) => {
+    console.error("Request failed:", error);
+    return Promise.reject(error);
+  }
+);
+
+export async function generateTripPlan(
+  request: TravelPlanRequest
+): Promise<TripPlan> {
+  const response = await api.post<TravelPlanResponse>("/travel/plans", request);
+  return response.data.plan;
+}
 
 export async function createTravelPlan(
   request: TravelPlanRequest
 ): Promise<TravelPlanResponse> {
-  const response = await fetch(`${API_BASE_URL}/travel/plans`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(request)
-  });
-
-  if (!response.ok) {
-    throw new Error("行程规划请求失败，请稍后重试");
-  }
-
-  return response.json();
+  const plan = await generateTripPlan(request);
+  return { plan };
 }
 
-export { API_BASE_URL };
+export async function getAgentTraces(): Promise<AgentTrace[]> {
+  const response = await api.get<AgentTrace[]>("/travel/agent-traces");
+  return response.data;
+}
+
+export async function getIntegrationStatus(): Promise<IntegrationStatus> {
+  const response = await api.get<IntegrationStatus>("/travel/integrations");
+  return response.data;
+}

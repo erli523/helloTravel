@@ -121,7 +121,7 @@ class AttractionSearchAgent(BaseAgent):
                 description=f"{description} Matched keywords: {', '.join(keywords)}.",
                 category=category,
                 rating=4.5 + index * 0.1,
-                image_url="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee",
+                image_url=None,
                 ticket_price=ticket_price,
             )
             for index, (

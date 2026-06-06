@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     )
 
     unsplash_api_key: str = Field(default="", alias="UNSPLASH_ACCESS_KEY")
+    unsplash_enabled: bool = Field(default=True, alias="UNSPLASH_ENABLED")
+    unsplash_base_url: str = Field(
+        default="https://api.unsplash.com", alias="UNSPLASH_BASE_URL"
+    )
+    unsplash_timeout: float = Field(default=10.0, alias="UNSPLASH_TIMEOUT")
+    unsplash_per_page: int = Field(default=1, alias="UNSPLASH_PER_PAGE")
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
 
     @property

@@ -63,3 +63,7 @@ npm run dev -- --host 127.0.0.1
 高德地图 MCP 集成、共享 MCP 实例和工具调用流程见：
 
 [docs/amap_mcp_integration.md](docs/amap_mcp_integration.md)
+
+Unsplash 图片 API 集成和图片增强流程见：
+
+[docs/unsplash_integration.md](docs/unsplash_integration.md)

@@ -9,6 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@amap/amap-jsapi-loader": "^1.0.1",
+    "axios": "^1.17.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "vue": "latest",
     "vue-router": "latest"
   },

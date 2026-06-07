@@ -95,7 +95,9 @@
                   v-if="attraction.image_url"
                   :src="attraction.image_url"
                   :alt="attraction.name"
-                  crossorigin="anonymous"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  @error="handleImageError(attraction)"
                 />
                 <div class="image-placeholder" v-else></div>
                 <div>
@@ -133,6 +135,31 @@
             </div>
           </div>
         </section>
+
+        <section id="agents" class="panel">
+          <h2>Agent workflow</h2>
+          <div class="agent-grid">
+            <article v-for="trace in agentTraces" :key="trace.agent_name" class="agent-card">
+              <header>
+                <span>{{ trace.agent_name }}</span>
+                <strong>{{ trace.summary }}</strong>
+              </header>
+              <p>{{ trace.agent_response || trace.reasoning_summary }}</p>
+              <details>
+                <summary>Trace</summary>
+                <div>
+                  <b>Reasoning summary</b>
+                  <p>{{ trace.reasoning_summary }}</p>
+                </div>
+                <div>
+                  <b>Tool calls</b>
+                  <code v-for="call in trace.tool_calls" :key="call">{{ call }}</code>
+                  <span v-if="trace.tool_calls.length === 0">No external tool call.</span>
+                </div>
+              </details>
+            </article>
+          </div>
+        </section>
       </div>
     </section>
   </main>
@@ -144,14 +171,16 @@ import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import { nextTick, onMounted, ref } from "vue";
 
-import type { Attraction, TripPlan } from "../types";
+import { getAgentTraces } from "../services/api";
+import type { AgentTrace, Attraction, TripPlan } from "../types";
 
 const navItems = [
   { key: "overview", label: "Overview" },
   { key: "budget", label: "Budget" },
   { key: "map", label: "Map" },
   { key: "days", label: "Daily itinerary" },
-  { key: "weather", label: "Weather" }
+  { key: "weather", label: "Weather" },
+  { key: "agents", label: "Agent workflow" }
 ];
 
 const tripPlan = ref<TripPlan | null>(loadTripPlan());
@@ -161,6 +190,7 @@ const activeSection = ref("overview");
 const mapContainer = ref<HTMLElement | null>(null);
 const mapFallback = ref("");
 const isExporting = ref(false);
+const agentTraces = ref<AgentTrace[]>([]);
 let mapInstance: any = null;
 
 function loadTripPlan() {
@@ -217,6 +247,10 @@ function deleteAttraction(dayIndex: number, attractionIndex: number) {
   tripPlan.value?.days[dayIndex]?.attractions.splice(attractionIndex, 1);
 }
 
+function handleImageError(attraction: Attraction) {
+  attraction.image_url = null;
+}
+
 function allAttractions(): Attraction[] {
   return tripPlan.value?.days.flatMap((day) => day.attractions) ?? [];
 }
@@ -242,14 +276,18 @@ async function initMap() {
       center: [first.longitude, first.latitude],
       zoom: 12
     });
-    points.forEach((attraction, index) => {
+    const markers = points.map((attraction, index) => {
       const marker = new AMap.Marker({
         position: [attraction.location.longitude, attraction.location.latitude],
         title: attraction.name,
         label: { content: `${index + 1}`, direction: "top" }
       });
       mapInstance.add(marker);
+      return marker;
     });
+    if (markers.length > 1) {
+      mapInstance.setFitView(markers, false, [36, 36, 36, 36], 13);
+    }
     mapFallback.value = "";
   } catch (error) {
     mapFallback.value = "Map failed to load. Coordinates are still listed in the itinerary.";
@@ -293,7 +331,16 @@ async function exportAsPDF() {
 
 onMounted(() => {
   void initMap();
+  void loadAgentTraces();
 });
+
+async function loadAgentTraces() {
+  try {
+    agentTraces.value = await getAgentTraces();
+  } catch (error) {
+    console.warn("Failed to load Agent traces", error);
+  }
+}
 </script>
 
 <style scoped>
@@ -393,9 +440,14 @@ onMounted(() => {
 }
 
 .budget-grid,
-.weather-grid {
+.weather-grid,
+.agent-grid {
   display: grid;
   gap: 10px;
+}
+
+.budget-grid,
+.weather-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -407,6 +459,47 @@ onMounted(() => {
   display: grid;
   gap: 5px;
   padding: 12px;
+}
+
+.agent-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agent-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.agent-card header {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-card header span {
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.agent-card p {
+  margin: 0;
+}
+
+.agent-card details {
+  color: #475569;
+}
+
+.agent-card code {
+  background: #e2e8f0;
+  border-radius: 6px;
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  padding: 7px;
 }
 
 .budget-grid span {
@@ -516,6 +609,7 @@ onMounted(() => {
 
   .budget-grid,
   .weather-grid,
+  .agent-grid,
   .attraction-row {
     grid-template-columns: 1fr;
   }

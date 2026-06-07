@@ -7,16 +7,16 @@ from app.config import Settings, get_settings
 
 
 AMAP_MCP_TOOL_NAMES = [
-    "maps_text_search",
-    "maps_search_detail",
-    "maps_around_search",
-    "maps_direction_walking",
-    "maps_direction_driving",
-    "maps_direction_bicycling",
-    "maps_direction_transit_integrated",
-    "maps_weather",
-    "maps_geo",
-    "maps_regeo",
+    "amap_maps_text_search",
+    "amap_maps_search_detail",
+    "amap_maps_around_search",
+    "amap_maps_direction_walking",
+    "amap_maps_direction_driving",
+    "amap_maps_bicycling",
+    "amap_maps_direction_transit_integrated",
+    "amap_maps_weather",
+    "amap_maps_geo",
+    "amap_maps_regeocode",
 ]
 
 
@@ -97,7 +97,15 @@ class AmapMCPToolset:
                 "message": f"Tool {tool_name} is not exposed by the MCP server.",
             }
 
-        result = tool.run(**arguments)
+        try:
+            result = tool.run(arguments)
+        except Exception as exc:
+            return {
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "status": "error",
+                "message": str(exc),
+            }
         return {
             "tool_name": tool_name,
             "arguments": arguments,

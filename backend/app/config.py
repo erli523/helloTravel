@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     unsplash_per_page: int = Field(default=1, alias="UNSPLASH_PER_PAGE")
 
     llm_model_id: str = Field(default="deepseek-v4-flash", alias="LLM_MODEL_ID")
+    llm_enabled: bool = Field(default=True, alias="LLM_ENABLED")
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
     llm_base_url: str = Field(default="https://api.deepseek.com/v1", alias="LLM_BASE_URL")
     llm_timeout: float = Field(default=60.0, alias="LLM_TIMEOUT")

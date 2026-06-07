@@ -13,13 +13,13 @@ class HotelAgent(BaseAgent):
 
     async def run(self, request: TravelPlanRequest) -> AgentResult[list[Hotel]]:
         tool_call = (
-            "[TOOL_CALL:maps_text_search:"
+            "[TOOL_CALL:amap_maps_text_search:"
             f"keywords={request.accommodation} hotel,city={request.city}]"
         )
         tool_result = None
         if self.amap_tools is not None:
             tool_result = await self.amap_tools.call_tool(
-                "maps_text_search",
+                "amap_maps_text_search",
                 {"keywords": f"{request.accommodation} hotel", "city": request.city},
             )
 
@@ -46,21 +46,46 @@ class HotelAgent(BaseAgent):
                 estimated_cost=max(estimated_cost - 80, 200),
             ),
         ]
+        prompt = self.render_prompt(
+            city=request.city,
+            accommodation=request.accommodation,
+        )
+        query = f"Search {request.accommodation} hotels in {request.city}."
+        summary = (
+            f"Recommended {len(hotels)} hotels. "
+            f"{self._source_summary(tool_result)}"
+        )
+        reasoning_summary = (
+            "Matched the requested accommodation level with a price profile, "
+            "called Amap hotel POI search, and selected transit-friendly hotel options."
+        )
+        context = "\n".join(
+            [
+                f"- {item.name}: {item.price_range}, rating={item.rating}, "
+                f"distance={item.distance}, cost={item.estimated_cost}"
+                for item in hotels
+            ]
+        )
+        agent_response = await self.build_agent_response(
+            prompt=prompt,
+            user_query=query,
+            context=f"{reasoning_summary}\nTool summary: {summary}\nHotels:\n{context}",
+            fallback=(
+                f"我按 {request.accommodation} 住宿需求，为 {request.city} "
+                f"推荐了 {len(hotels)} 个交通便利的酒店选项。"
+            ),
+        )
 
         return AgentResult(
             data=hotels,
             trace=AgentTrace(
                 agent_name=self.name,
-                prompt=self.render_prompt(
-                    city=request.city,
-                    accommodation=request.accommodation,
-                ),
-                user_query=f"Search {request.accommodation} hotels in {request.city}.",
+                prompt=prompt,
+                user_query=query,
                 tool_calls=[tool_call],
-                summary=(
-                    f"Recommended {len(hotels)} hotels. "
-                    f"{self._source_summary(tool_result)}"
-                ),
+                summary=summary,
+                reasoning_summary=reasoning_summary,
+                agent_response=agent_response,
             ),
         )
 

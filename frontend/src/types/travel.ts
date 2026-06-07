@@ -99,6 +99,8 @@ export interface AgentTrace {
   user_query: string;
   tool_calls: string[];
   summary: string;
+  reasoning_summary: string;
+  agent_response: string;
 }
 
 export interface IntegrationStatus {
@@ -109,4 +111,10 @@ export interface IntegrationStatus {
     reason?: string | null;
   };
   amap_mcp: string;
+  llm: {
+    enabled: boolean;
+    available: boolean;
+    model: string;
+    base_url: string;
+  };
 }

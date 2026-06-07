@@ -44,6 +44,31 @@ class PlannerAgent(BaseAgent):
             ),
             budget=budget,
         )
+        reasoning_summary = (
+            "Integrated attractions, weather, hotels, traveler count, budget level, "
+            "and date range into a day-by-day route with meals and estimated costs."
+        )
+        context = "\n".join(
+            [
+                f"- Day {day.day_index + 1} {day.date}: "
+                f"{', '.join(item.name for item in day.attractions)}; "
+                f"hotel={day.hotel.name if day.hotel else day.accommodation}"
+                for day in days
+            ]
+        )
+        summary = f"Generated {len(days)} daily plans with budget {budget.total} CNY."
+        agent_response = await self.build_agent_response(
+            prompt=self.prompt_template,
+            user_query=planner_query,
+            context=(
+                f"{reasoning_summary}\nBudget total: {budget.total} CNY\n"
+                f"Daily plan:\n{context}"
+            ),
+            fallback=(
+                f"我已把景点、天气、酒店和预算整合为 {len(days)} 天行程，"
+                f"预计总预算约 {budget.total} CNY。"
+            ),
+        )
 
         return AgentResult(
             data=plan,
@@ -52,9 +77,9 @@ class PlannerAgent(BaseAgent):
                 prompt=self.prompt_template,
                 user_query=planner_query,
                 tool_calls=[],
-                summary=(
-                    f"Generated {len(days)} daily plans with budget {budget.total} CNY."
-                ),
+                summary=summary,
+                reasoning_summary=reasoning_summary,
+                agent_response=agent_response,
             ),
         )
 

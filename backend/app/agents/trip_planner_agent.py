@@ -7,6 +7,7 @@ from app.agents.itinerary_agent import PlannerAgent
 from app.agents.weather_agent import WeatherQueryAgent
 from app.models.travel import TravelPlanRequest, TripPlan
 from app.services.mcp_client import AmapMCPToolset
+from app.services.llm_service import LLMService
 
 
 class TripPlannerAgent:
@@ -14,10 +15,20 @@ class TripPlannerAgent:
 
     def __init__(self) -> None:
         self.amap_tools = AmapMCPToolset()
-        self.attraction_agent = AttractionSearchAgent(amap_tools=self.amap_tools)
-        self.weather_agent = WeatherQueryAgent(amap_tools=self.amap_tools)
-        self.hotel_agent = HotelAgent(amap_tools=self.amap_tools)
-        self.planner_agent = PlannerAgent()
+        self.llm_service = LLMService()
+        self.attraction_agent = AttractionSearchAgent(
+            amap_tools=self.amap_tools,
+            llm_service=self.llm_service,
+        )
+        self.weather_agent = WeatherQueryAgent(
+            amap_tools=self.amap_tools,
+            llm_service=self.llm_service,
+        )
+        self.hotel_agent = HotelAgent(
+            amap_tools=self.amap_tools,
+            llm_service=self.llm_service,
+        )
+        self.planner_agent = PlannerAgent(llm_service=self.llm_service)
         self.last_traces: list[AgentTrace] = []
 
     async def plan_trip(self, request: TravelPlanRequest) -> TripPlan:

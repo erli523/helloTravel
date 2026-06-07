@@ -44,6 +44,27 @@ export interface Budget {
   total_meals: number;
   total_transportation: number;
   total: number;
+  hotel_nights: number;
+  travelers: number;
+  details: BudgetDetail[];
+}
+
+export interface BudgetDetail {
+  category: string;
+  item: string;
+  unit_cost: number;
+  quantity: number;
+  subtotal: number;
+  note: string;
+}
+
+export interface ScheduleItem {
+  time: string;
+  end_time: string;
+  activity: string;
+  location: string;
+  notes: string;
+  item_type: string;
 }
 
 export interface DayPlan {
@@ -55,6 +76,7 @@ export interface DayPlan {
   hotel?: Hotel | null;
   attractions: Attraction[];
   meals: Meal[];
+  timeline: ScheduleItem[];
 }
 
 export interface WeatherInfo {

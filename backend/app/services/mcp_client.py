@@ -1,7 +1,12 @@
 """MCP integration boundary for Agent tool calls."""
 
+import asyncio
+from unittest.mock import patch
+import os
 from dataclasses import dataclass, field
 from typing import Any
+
+import httpx
 
 from app.config import Settings, get_settings
 
@@ -20,6 +25,10 @@ AMAP_MCP_TOOL_NAMES = [
 ]
 
 
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
+
+
 @dataclass
 class AmapMCPToolset:
     """Shared Amap MCPTool instance used by multiple Agents."""
@@ -28,6 +37,11 @@ class AmapMCPToolset:
     tool: Any | None = None
     expanded_tools: dict[str, Any] = field(default_factory=dict)
     startup_error: str | None = None
+    _call_semaphore: asyncio.Semaphore = field(
+        default_factory=lambda: asyncio.Semaphore(4),
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if self.settings.amap_mcp_enabled:
@@ -59,15 +73,13 @@ class AmapMCPToolset:
         try:
             from hello_agents.tools import MCPTool
 
-            self.tool = MCPTool(
-                name=self.settings.amap_mcp_name,
-                server_command=self.settings.amap_mcp_command,
-                env={
-                    "AMAP_API_KEY": self.settings.amap_api_key,
-                    "AMAP_MAPS_API_KEY": self.settings.amap_api_key,
-                },
-                auto_expand=True,
-            )
+            with patch("builtins.print", lambda *args, **kwargs: None):
+                self.tool = MCPTool(
+                    name=self.settings.amap_mcp_name,
+                    server_command=self.settings.amap_mcp_command,
+                    env=self._mcp_env(),
+                    auto_expand=True,
+                )
             expanded = self.tool.get_expanded_tools()
             self.expanded_tools = {
                 item.name: item for item in expanded
@@ -89,29 +101,202 @@ class AmapMCPToolset:
             }
 
         tool = self.expanded_tools.get(tool_name)
-        if tool is None:
-            return {
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "status": "missing",
-                "message": f"Tool {tool_name} is not exposed by the MCP server.",
-            }
 
         try:
-            result = tool.run(arguments)
+            async with self._call_semaphore:
+                call = (
+                    lambda: tool.run(arguments)
+                    if tool is not None
+                    else self._run_direct_tool(tool_name, arguments)
+                )
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(call),
+                    timeout=self.settings.amap_mcp_tool_timeout,
+                )
+        except asyncio.TimeoutError:
+            return await self._rest_fallback(
+                tool_name,
+                arguments,
+                fallback_status="timeout",
+                fallback_message=(
+                    f"Tool {tool_name} exceeded "
+                    f"{self.settings.amap_mcp_tool_timeout:.0f}s timeout."
+                ),
+            )
         except Exception as exc:
-            return {
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "status": "error",
-                "message": str(exc),
-            }
+            return await self._rest_fallback(
+                tool_name,
+                arguments,
+                fallback_status="error",
+                fallback_message=str(exc),
+            )
+        if self._looks_like_encoding_failure(result):
+            return await self._rest_fallback(
+                tool_name,
+                arguments,
+                fallback_status="error",
+                fallback_message=str(result),
+            )
         return {
             "tool_name": tool_name,
             "arguments": arguments,
             "status": "ok",
             "result": result,
         }
+
+    async def _rest_fallback(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        fallback_status: str,
+        fallback_message: str,
+    ) -> dict[str, Any]:
+        rest_result = await self._call_amap_rest(tool_name, arguments)
+        if rest_result is not None:
+            return {
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "status": "ok",
+                "source": "amap_rest_fallback",
+                "mcp_status": fallback_status,
+                "message": fallback_message,
+                "result": rest_result,
+            }
+        return {
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "status": fallback_status,
+            "message": fallback_message,
+        }
+
+    async def _call_amap_rest(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self.settings.amap_api_key:
+            return None
+
+        if tool_name == "amap_maps_text_search":
+            endpoint = "https://restapi.amap.com/v3/place/text"
+            city = str(arguments.get("city") or "")
+            keywords = self._expand_rest_keywords(str(arguments.get("keywords") or ""))
+            merged: dict[str, Any] | None = None
+            seen_ids: set[str] = set()
+            for keyword in keywords:
+                params = {
+                    "key": self.settings.amap_api_key,
+                    "keywords": keyword,
+                    "city": city,
+                    "citylimit": "true",
+                    "offset": 20,
+                    "page": 1,
+                    "extensions": "all",
+                }
+                data = await self._get_amap_json(endpoint, params)
+                if not data:
+                    continue
+                if merged is None:
+                    merged = data
+                    merged["pois"] = []
+                for poi in data.get("pois") or []:
+                    poi_id = str(poi.get("id") or poi.get("name") or "")
+                    if not poi_id or poi_id in seen_ids:
+                        continue
+                    seen_ids.add(poi_id)
+                    merged["pois"].append(poi)
+                if len(merged["pois"]) >= 12:
+                    break
+            return merged
+
+        if tool_name == "amap_maps_search_detail":
+            endpoint = "https://restapi.amap.com/v3/place/detail"
+            params = {
+                "key": self.settings.amap_api_key,
+                "id": arguments.get("id", ""),
+                "extensions": "all",
+            }
+            data = await self._get_amap_json(endpoint, params)
+            if not data:
+                return None
+            pois = data.get("pois") or []
+            if pois:
+                return pois[0]
+            return data
+
+        if tool_name == "amap_maps_weather":
+            endpoint = "https://restapi.amap.com/v3/weather/weatherInfo"
+            params = {
+                "key": self.settings.amap_api_key,
+                "city": arguments.get("city", ""),
+                "extensions": "all",
+            }
+            return await self._get_amap_json(endpoint, params)
+
+        return None
+
+    def _expand_rest_keywords(self, keyword: str) -> list[str]:
+        keyword = keyword.strip()
+        if keyword in {"景点", "旅游景点", "landmark", "local culture"}:
+            return ["景点", "旅游景点", "风景名胜", "公园", "博物馆"]
+        if keyword in {"museum", "文化", "历史文化"}:
+            return ["博物馆", "纪念馆", "文化馆", "景点", "风景名胜"]
+        if keyword in {"park", "自然", "自然风光"}:
+            return ["公园", "景点", "风景名胜", "湿地公园"]
+        if "酒店" in keyword or "宾馆" in keyword or "住宿" in keyword:
+            return [keyword, "酒店", "宾馆", "住宿"]
+        if "美食" in keyword or "餐厅" in keyword or "小吃" in keyword:
+            return [keyword, "餐厅", "小吃", "特色美食"]
+        return [keyword]
+
+    async def _get_amap_json(
+        self,
+        endpoint: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.settings.amap_mcp_tool_timeout
+            ) as client:
+                response = await client.get(endpoint, params=params)
+                response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        data = response.json()
+        if not isinstance(data, dict) or data.get("status") != "1":
+            return None
+        return data
+
+    def _looks_like_encoding_failure(self, result: Any) -> bool:
+        if not isinstance(result, str):
+            return False
+        return "codec can't encode" in result or "UnicodeEncodeError" in result
+
+    def _mcp_env(self) -> dict[str, str]:
+        return {
+            "AMAP_API_KEY": self.settings.amap_api_key,
+            "AMAP_MAPS_API_KEY": self.settings.amap_api_key,
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "NO_COLOR": "1",
+        }
+
+    def _run_direct_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        from hello_agents.protocols.mcp.client import MCPClient
+
+        async def call() -> Any:
+            async with MCPClient(
+                self.settings.amap_mcp_command,
+                env=self._mcp_env(),
+            ) as client:
+                return await client.call_tool(tool_name, arguments)
+
+        with patch("builtins.print", lambda *args, **kwargs: None):
+            return asyncio.run(call())
 
 
 class MCPClient(AmapMCPToolset):

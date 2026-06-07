@@ -1,8 +1,9 @@
 """Trip image enrichment service."""
 
+import asyncio
 from urllib.parse import quote, urlparse
 
-from app.models.travel import TripPlan
+from app.models.travel import Attraction, TripPlan
 from app.services.unsplash_service import UnsplashService
 
 
@@ -28,6 +29,7 @@ class TripImageService:
             self._remove_unsafe_image_urls(trip_plan)
             return trip_plan
 
+        image_tasks: list[tuple[Attraction, str]] = []
         for day in trip_plan.days:
             for attraction in day.attractions:
                 if attraction.image_url and attraction.image_url.startswith("/api/"):
@@ -37,9 +39,9 @@ class TripImageService:
                     attraction.image_url = existing_image
                     continue
 
-                query = f"{attraction.name} {trip_plan.city}"
-                source_url = await self.unsplash_service.get_photo_url(query)
-                attraction.image_url = self._proxy_url(source_url)
+                image_tasks.append((attraction, f"{attraction.name} {trip_plan.city}"))
+
+        await self._enrich_from_unsplash(image_tasks)
         return trip_plan
 
     def status(self) -> dict:
@@ -66,3 +68,18 @@ class TripImageService:
         if parsed.netloc.lower() not in ALLOWED_IMAGE_HOSTS:
             return None
         return f"/api/travel/images/proxy?url={quote(url, safe='')}"
+
+    async def _enrich_from_unsplash(
+        self,
+        image_tasks: list[tuple[Attraction, str]],
+    ) -> None:
+        semaphore = asyncio.Semaphore(4)
+
+        async def fill_image(attraction: Attraction, query: str) -> None:
+            async with semaphore:
+                source_url = await self.unsplash_service.get_photo_url(query)
+                attraction.image_url = self._proxy_url(source_url)
+
+        await asyncio.gather(
+            *(fill_image(attraction, query) for attraction, query in image_tasks)
+        )

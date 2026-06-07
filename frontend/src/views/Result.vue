@@ -2,6 +2,10 @@
   <main class="result-page">
     <aside class="side-nav">
       <RouterLink class="back-link" to="/">New plan</RouterLink>
+      <div class="nav-title">
+        <span>Itinerary</span>
+        <strong>{{ tripPlan?.city || "Trip" }}</strong>
+      </div>
       <button
         v-for="item in navItems"
         :key="item.key"
@@ -22,8 +26,13 @@
     <section v-else class="result-shell">
       <div class="toolbar">
         <div>
-          <p>{{ tripPlan.start_date }} to {{ tripPlan.end_date }}</p>
+          <p class="eyebrow">{{ tripPlan.start_date }} to {{ tripPlan.end_date }}</p>
           <h1>{{ tripPlan.city }} Travel Plan</h1>
+          <div class="quick-stats">
+            <span>{{ tripPlan.days.length }} days</span>
+            <span>{{ totalAttractions }} attractions</span>
+            <span v-if="tripPlan.budget">{{ tripPlan.budget.total }} CNY</span>
+          </div>
         </div>
         <div class="toolbar-actions">
           <button type="button" @click="exportAsImage">Export PNG</button>
@@ -38,12 +47,18 @@
 
       <div id="trip-plan-content" class="content-stack">
         <section id="overview" class="panel">
-          <h2>Overview</h2>
+          <div class="section-heading">
+            <span>01</span>
+            <h2>Overview</h2>
+          </div>
           <p>{{ tripPlan.overall_suggestions }}</p>
         </section>
 
         <section v-if="tripPlan.budget" id="budget" class="panel">
-          <h2>Budget</h2>
+          <div class="section-heading">
+            <span>02</span>
+            <h2>Budget</h2>
+          </div>
           <div class="budget-grid">
             <div>
               <span>Attractions</span>
@@ -63,28 +78,98 @@
             </div>
           </div>
           <div class="total-budget">{{ tripPlan.budget.total }} CNY</div>
+          <p class="budget-note">
+            Travelers: {{ tripPlan.budget.travelers }} | Hotel nights:
+            {{ tripPlan.budget.hotel_nights }}
+          </p>
+          <div class="budget-detail-table">
+            <div class="budget-detail-head">
+              <span>Category</span>
+              <span>Item</span>
+              <span>Unit</span>
+              <span>Qty</span>
+              <span>Subtotal</span>
+            </div>
+            <div
+              v-for="detail in tripPlan.budget.details"
+              :key="`${detail.category}-${detail.item}`"
+              class="budget-detail-row"
+            >
+              <span>{{ detail.category }}</span>
+              <span>
+                <strong>{{ detail.item }}</strong>
+                <small>{{ detail.note }}</small>
+              </span>
+              <span>{{ detail.unit_cost }} CNY</span>
+              <span>{{ detail.quantity }}</span>
+              <span>{{ detail.subtotal }} CNY</span>
+            </div>
+          </div>
         </section>
 
         <section id="map" class="panel map-panel" :class="{ exporting: isExporting }">
-          <h2>Map</h2>
+          <div class="section-heading">
+            <span>03</span>
+            <h2>Map</h2>
+          </div>
           <div ref="mapContainer" class="amap-container">
             <span v-if="mapFallback">{{ mapFallback }}</span>
           </div>
         </section>
 
         <section id="days" class="panel">
-          <h2>Daily itinerary</h2>
+          <div class="section-heading">
+            <span>04</span>
+            <h2>Daily itinerary</h2>
+          </div>
           <article v-for="(day, dayIndex) in tripPlan.days" :key="day.date" class="day-card">
             <header>
               <div>
-                <span>Day {{ day.day_index + 1 }}</span>
+                <span>第 {{ day.day_index + 1 }} 天</span>
                 <h3>{{ day.date }}</h3>
               </div>
               <p>{{ day.transportation }}</p>
             </header>
             <p>{{ day.description }}</p>
-            <p class="hotel-line">Hotel: {{ day.hotel?.name || day.accommodation }}</p>
+            <p class="hotel-line">🏨 住宿：{{ day.hotel?.name || day.accommodation }}</p>
 
+            <!-- Detailed time-based timeline -->
+            <div v-if="day.timeline && day.timeline.length" class="day-timeline">
+              <div
+                v-for="(item, ti) in day.timeline"
+                :key="`${day.date}-tl-${ti}`"
+                :class="['timeline-item', `tl-${item.item_type}`]"
+              >
+                <div class="tl-time-col">
+                  <span class="tl-start">{{ item.time }}</span>
+                  <span class="tl-sep">↓</span>
+                  <span class="tl-end">{{ item.end_time }}</span>
+                </div>
+                <div class="tl-track">
+                  <div class="tl-dot"></div>
+                  <div v-if="ti < day.timeline.length - 1" class="tl-line"></div>
+                </div>
+                <div class="tl-body">
+                  <div class="tl-title">
+                    <span class="tl-icon">{{ timelineIcon(item.item_type) }}</span>
+                    <strong>{{ item.activity }}</strong>
+                  </div>
+                  <p v-if="item.notes" class="tl-notes">{{ item.notes }}</p>
+                  <small v-if="item.location" class="tl-location">📍 {{ item.location }}</small>
+                </div>
+              </div>
+            </div>
+
+            <!-- Fallback: classic meal list when no timeline -->
+            <div v-else class="meal-list">
+              <section v-for="meal in day.meals" :key="`${day.date}-${meal.type}-${meal.name}`">
+                <span>{{ meal.type }}</span>
+                <strong>{{ meal.name }}</strong>
+                <p>{{ meal.address || meal.description }}</p>
+              </section>
+            </div>
+
+            <!-- Attraction photo cards (always shown) -->
             <div class="attractions">
               <section
                 v-for="(attraction, attractionIndex) in day.attractions"
@@ -104,20 +189,15 @@
                   <h4>{{ attraction.name }}</h4>
                   <p>{{ attraction.description }}</p>
                   <span>
-                    {{ attraction.category }} · {{ attraction.visit_duration }} min ·
-                    {{ attraction.ticket_price }} CNY
+                    {{ attraction.category }} · {{ attraction.visit_duration }} 分钟 ·
+                    {{ attraction.ticket_price > 0 ? attraction.ticket_price + ' 元' : '免费' }}
+                    <template v-if="attraction.rating"> · ⭐ {{ attraction.rating }}</template>
                   </span>
                 </div>
                 <div v-if="editMode" class="edit-buttons">
-                  <button type="button" @click="moveAttraction(dayIndex, attractionIndex, 'up')">
-                    Up
-                  </button>
-                  <button type="button" @click="moveAttraction(dayIndex, attractionIndex, 'down')">
-                    Down
-                  </button>
-                  <button type="button" class="danger" @click="deleteAttraction(dayIndex, attractionIndex)">
-                    Delete
-                  </button>
+                  <button type="button" @click="moveAttraction(dayIndex, attractionIndex, 'up')">上移</button>
+                  <button type="button" @click="moveAttraction(dayIndex, attractionIndex, 'down')">下移</button>
+                  <button type="button" class="danger" @click="deleteAttraction(dayIndex, attractionIndex)">删除</button>
                 </div>
               </section>
             </div>
@@ -125,7 +205,10 @@
         </section>
 
         <section id="weather" class="panel">
-          <h2>Weather</h2>
+          <div class="section-heading">
+            <span>05</span>
+            <h2>Weather</h2>
+          </div>
           <div class="weather-grid">
             <div v-for="weather in tripPlan.weather_info" :key="weather.date">
               <strong>{{ weather.date }}</strong>
@@ -137,7 +220,10 @@
         </section>
 
         <section id="agents" class="panel">
-          <h2>Agent workflow</h2>
+          <div class="section-heading">
+            <span>06</span>
+            <h2>Agent workflow</h2>
+          </div>
           <div class="agent-grid">
             <article v-for="trace in agentTraces" :key="trace.agent_name" class="agent-card">
               <header>
@@ -169,7 +255,7 @@
 import AMapLoader from "@amap/amap-jsapi-loader";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
-import { nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 
 import { getAgentTraces } from "../services/api";
 import type { AgentTrace, Attraction, TripPlan } from "../types";
@@ -191,6 +277,7 @@ const mapContainer = ref<HTMLElement | null>(null);
 const mapFallback = ref("");
 const isExporting = ref(false);
 const agentTraces = ref<AgentTrace[]>([]);
+const totalAttractions = computed(() => allAttractions().length);
 let mapInstance: any = null;
 
 function loadTripPlan() {
@@ -249,6 +336,16 @@ function deleteAttraction(dayIndex: number, attractionIndex: number) {
 
 function handleImageError(attraction: Attraction) {
   attraction.image_url = null;
+}
+
+function timelineIcon(type: string): string {
+  const icons: Record<string, string> = {
+    attraction: "🏛️",
+    meal: "🍽️",
+    transit: "🚶",
+    rest: "☕",
+  };
+  return icons[type] ?? "📍";
 }
 
 function allAttractions(): Attraction[] {
@@ -345,13 +442,16 @@ async function loadAgentTraces() {
 
 <style scoped>
 .result-page {
-  background: #eef6f4;
+  background:
+    linear-gradient(180deg, #eaf4f1 0%, #f8fafc 42%, #f7f3ea 100%);
   color: #0f172a;
   display: grid;
-  gap: 22px;
-  grid-template-columns: 220px 1fr;
+  gap: 20px;
+  grid-template-columns: 216px minmax(0, 1fr);
   min-height: 100vh;
-  padding: 22px;
+  overflow-x: hidden;
+  padding: 20px;
+  width: 100%;
 }
 
 .side-nav,
@@ -359,17 +459,43 @@ async function loadAgentTraces() {
 .toolbar,
 .missing-state {
   background: #ffffff;
-  border: 1px solid #dbe7e4;
+  border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 8px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.06);
 }
 
 .side-nav {
   align-self: start;
   display: grid;
   gap: 8px;
-  padding: 14px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  padding: 12px;
   position: sticky;
-  top: 22px;
+  top: 20px;
+  width: 216px;
+}
+
+.nav-title {
+  border-bottom: 1px solid #e2e8f0;
+  display: grid;
+  gap: 3px;
+  margin-bottom: 4px;
+  padding: 4px 4px 12px;
+}
+
+.nav-title span,
+.eyebrow {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.nav-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .side-nav button,
@@ -381,9 +507,35 @@ async function loadAgentTraces() {
   color: #0f172a;
   cursor: pointer;
   font: inherit;
+  min-width: 0;
   padding: 9px 10px;
   text-align: left;
   text-decoration: none;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.side-nav button,
+.back-link {
+  background: #f8fafc;
+  overflow-wrap: anywhere;
+}
+
+.back-link {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #ffffff;
+  font-weight: 800;
+  text-align: center;
+}
+
+.side-nav button:hover,
+.toolbar-actions button:hover,
+.edit-buttons button:hover {
+  transform: translateY(-1px);
 }
 
 .side-nav button.active,
@@ -398,6 +550,13 @@ async function loadAgentTraces() {
 .content-stack {
   display: grid;
   gap: 16px;
+  min-width: 0;
+}
+
+.result-shell {
+  margin: 0 auto;
+  max-width: 1180px;
+  width: 100%;
 }
 
 .toolbar {
@@ -405,7 +564,8 @@ async function loadAgentTraces() {
   display: flex;
   gap: 18px;
   justify-content: space-between;
-  padding: 18px;
+  min-width: 0;
+  padding: 20px;
 }
 
 .toolbar h1,
@@ -414,6 +574,32 @@ async function loadAgentTraces() {
 .day-card h3,
 .attraction-row h4 {
   margin: 0;
+}
+
+.toolbar h1 {
+  font-size: 32px;
+  line-height: 1.1;
+}
+
+.eyebrow {
+  margin-bottom: 7px;
+}
+
+.quick-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.quick-stats span {
+  background: #eef6f4;
+  border: 1px solid #cce3df;
+  border-radius: 8px;
+  color: #115e59;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 7px 9px;
 }
 
 .toolbar p,
@@ -428,15 +614,44 @@ async function loadAgentTraces() {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  justify-content: flex-end;
+  min-width: 220px;
 }
 
 .toolbar-actions button {
+  background: #ffffff;
   text-align: center;
 }
 
 .panel,
 .missing-state {
-  padding: 18px;
+  min-width: 0;
+  padding: 20px;
+}
+
+.section-heading {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.section-heading span {
+  align-items: center;
+  background: #102a43;
+  border-radius: 8px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  height: 30px;
+  justify-content: center;
+  width: 36px;
+}
+
+.section-heading h2 {
+  font-size: 22px;
+  line-height: 1.1;
 }
 
 .budget-grid,
@@ -448,12 +663,12 @@ async function loadAgentTraces() {
 
 .budget-grid,
 .weather-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
 }
 
 .budget-grid div,
 .weather-grid div {
-  background: #f8fafc;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   display: grid;
@@ -471,6 +686,7 @@ async function loadAgentTraces() {
   border-radius: 8px;
   display: grid;
   gap: 10px;
+  min-width: 0;
   padding: 12px;
 }
 
@@ -498,6 +714,7 @@ async function loadAgentTraces() {
   border-radius: 6px;
   display: block;
   margin-top: 6px;
+  max-width: 100%;
   overflow-wrap: anywhere;
   padding: 7px;
 }
@@ -515,6 +732,54 @@ async function loadAgentTraces() {
   text-align: center;
 }
 
+.budget-note {
+  color: #475569;
+  margin: 8px 0 0;
+  text-align: center;
+}
+
+.budget-detail-table {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: grid;
+  margin-top: 14px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.budget-detail-head,
+.budget-detail-row {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(86px, 0.75fr) minmax(220px, 2fr) minmax(82px, 0.7fr) minmax(52px, 0.45fr) minmax(92px, 0.75fr);
+  min-width: 640px;
+  padding: 10px 12px;
+}
+
+.budget-detail-head {
+  background: #0f766e;
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.budget-detail-row {
+  align-items: center;
+  background: #ffffff;
+  border-top: 1px solid #e2e8f0;
+}
+
+.budget-detail-row span,
+.budget-detail-head span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.budget-detail-row small {
+  color: #64748b;
+  display: block;
+  margin-top: 3px;
+}
+
 .amap-container {
   align-items: center;
   background:
@@ -525,9 +790,10 @@ async function loadAgentTraces() {
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   display: flex;
-  height: 320px;
+  height: 340px;
   justify-content: center;
   margin-top: 12px;
+  overflow: hidden;
 }
 
 .map-panel.exporting {
@@ -538,6 +804,7 @@ async function loadAgentTraces() {
   border-top: 1px solid #e2e8f0;
   display: grid;
   gap: 12px;
+  min-width: 0;
   padding: 16px 0;
 }
 
@@ -558,11 +825,161 @@ async function loadAgentTraces() {
   gap: 12px;
 }
 
-.attraction-row {
+.meal-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.meal-list section {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.meal-list span {
+  color: #c2410c;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.meal-list strong,
+.meal-list p {
+  margin: 0;
+}
+
+.meal-list p {
+  color: #7c2d12;
+  font-size: 13px;
+}
+
+/* ── Day timeline ─────────────────────────────────────────────────── */
+.day-timeline {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0 8px;
+}
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 58px 22px 1fr;
+  gap: 0 10px;
+  min-height: 52px;
+}
+
+.tl-time-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding-top: 2px;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tl-start {
+  font-weight: 700;
+  font-size: 13px;
+  color: #1e293b;
+  white-space: nowrap;
+}
+
+.tl-sep {
+  font-size: 10px;
+  color: #cbd5e1;
+  line-height: 1;
+}
+
+.tl-end {
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.tl-track {
+  display: flex;
+  flex-direction: column;
   align-items: center;
+  padding-top: 4px;
+}
+
+.tl-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #3b82f6;
+  flex-shrink: 0;
+}
+
+.tl-line {
+  width: 2px;
+  flex: 1;
+  background: #e2e8f0;
+  min-height: 14px;
+  margin: 3px 0;
+}
+
+.tl-body {
+  padding: 0 0 14px;
+  min-width: 0;
+}
+
+.tl-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tl-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.tl-notes {
+  font-size: 12px;
+  color: #64748b;
+  margin: 3px 0 0;
+  line-height: 1.55;
+}
+
+.tl-location {
+  font-size: 11px;
+  color: #94a3b8;
+  display: block;
+  margin-top: 2px;
+}
+
+/* Type-specific dot colours */
+.tl-attraction .tl-dot { background: #3b82f6; }
+.tl-meal .tl-dot       { background: #22c55e; }
+.tl-transit .tl-dot    { background: #94a3b8; }
+.tl-rest .tl-dot       { background: #f97316; }
+
+.tl-transit .tl-title strong {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.tl-rest .tl-title strong {
+  color: #ea580c;
+}
+
+.attraction-row {
+  align-items: start;
+  background: #fbfdff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
   display: grid;
   gap: 12px;
-  grid-template-columns: 110px 1fr auto;
+  grid-template-columns: 124px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 10px;
 }
 
 .attraction-row img,
@@ -570,11 +987,24 @@ async function loadAgentTraces() {
   aspect-ratio: 4 / 3;
   border-radius: 8px;
   object-fit: cover;
-  width: 110px;
+  width: 124px;
+}
+
+.attraction-row > div {
+  min-width: 0;
+}
+
+.attraction-row h4,
+.attraction-row p,
+.hotel-line,
+.day-card > p {
+  overflow-wrap: anywhere;
 }
 
 .image-placeholder {
-  background: #dbe7e4;
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.16), rgba(245, 158, 11, 0.14)),
+    #dbe7e4;
 }
 
 .attraction-row span {
@@ -585,6 +1015,7 @@ async function loadAgentTraces() {
 .edit-buttons {
   display: flex;
   gap: 6px;
+  justify-content: flex-end;
 }
 
 .edit-buttons button {
@@ -601,15 +1032,33 @@ async function loadAgentTraces() {
 @media (max-width: 980px) {
   .result-page {
     grid-template-columns: 1fr;
+    padding: 12px;
   }
 
   .side-nav {
+    display: flex;
+    gap: 8px;
+    max-height: none;
+    overflow-x: auto;
+    padding: 10px;
     position: static;
+    width: 100%;
+  }
+
+  .nav-title {
+    display: none;
+  }
+
+  .side-nav button,
+  .back-link {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .budget-grid,
   .weather-grid,
   .agent-grid,
+  .meal-list,
   .attraction-row {
     grid-template-columns: 1fr;
   }
@@ -618,6 +1067,26 @@ async function loadAgentTraces() {
   .day-card header {
     align-items: stretch;
     display: grid;
+  }
+
+  .budget-detail-head,
+  .budget-detail-row {
+    grid-template-columns: 1fr;
+    min-width: 0;
+  }
+
+  .toolbar-actions {
+    justify-content: stretch;
+    min-width: 0;
+  }
+
+  .toolbar-actions button {
+    flex: 1 1 140px;
+  }
+
+  .attraction-row img,
+  .image-placeholder {
+    width: 100%;
   }
 }
 </style>

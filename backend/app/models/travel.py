@@ -63,6 +63,37 @@ class Budget(BaseModel):
     total_meals: int = Field(default=0, ge=0, description="Meal cost")
     total_transportation: int = Field(default=0, ge=0, description="Transport cost")
     total: int = Field(default=0, ge=0, description="Total cost")
+    hotel_nights: int = Field(default=0, ge=0, description="Charged hotel nights")
+    travelers: int = Field(default=1, ge=1, description="Traveler count")
+    details: list["BudgetDetail"] = Field(
+        default_factory=list,
+        description="Line-item budget details",
+    )
+
+
+class BudgetDetail(BaseModel):
+    """One explainable budget line."""
+
+    category: str = Field(..., description="Budget category")
+    item: str = Field(..., description="Budget item name")
+    unit_cost: int = Field(default=0, ge=0, description="Unit cost")
+    quantity: int = Field(default=1, ge=0, description="Quantity")
+    subtotal: int = Field(default=0, ge=0, description="Subtotal")
+    note: str = Field(default="", description="Budget explanation")
+
+
+class ScheduleItem(BaseModel):
+    """One time-slot entry in the day's timeline."""
+
+    time: str = Field(..., description="Start time, HH:MM")
+    end_time: str = Field(..., description="End time, HH:MM")
+    activity: str = Field(..., description="Activity description")
+    location: str = Field(default="", description="Location name")
+    notes: str = Field(default="", description="Tips or transit notes")
+    item_type: str = Field(
+        default="attraction",
+        description="Type: attraction | meal | transit | rest",
+    )
 
 
 class DayPlan(BaseModel):
@@ -76,6 +107,10 @@ class DayPlan(BaseModel):
     hotel: Hotel | None = Field(default=None, description="Hotel")
     attractions: list[Attraction] = Field(default_factory=list, description="Attractions")
     meals: list[Meal] = Field(default_factory=list, description="Meals")
+    timeline: list[ScheduleItem] = Field(
+        default_factory=list,
+        description="Time-based daily schedule from 08:30 to 20:00",
+    )
 
 
 class WeatherInfo(BaseModel):

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         default="@amap/amap-maps-mcp-server",
         alias="AMAP_MCP_PACKAGE",
     )
+    amap_mcp_tool_timeout: float = Field(default=15.0, alias="AMAP_MCP_TOOL_TIMEOUT")
 
     unsplash_api_key: str = Field(default="", alias="UNSPLASH_ACCESS_KEY")
     unsplash_enabled: bool = Field(default=True, alias="UNSPLASH_ENABLED")
@@ -40,6 +41,7 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
     llm_base_url: str = Field(default="https://api.deepseek.com/v1", alias="LLM_BASE_URL")
     llm_timeout: float = Field(default=60.0, alias="LLM_TIMEOUT")
+    agent_response_timeout: float = Field(default=20.0, alias="AGENT_RESPONSE_TIMEOUT")
 
     dashscope_api_key: str = Field(default="", alias="DASHSCOPE_API_KEY")
     dashscope_base_url: str = Field(

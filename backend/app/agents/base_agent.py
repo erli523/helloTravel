@@ -1,5 +1,6 @@
 """Shared Agent abstractions."""
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -60,10 +61,16 @@ class BaseAgent:
     ) -> str:
         if self.llm_service is None:
             return fallback
-        return await self.llm_service.generate_agent_reply(
-            agent_name=self.name,
-            system_prompt=prompt,
-            user_query=user_query,
-            context=context,
-            fallback=fallback,
-        )
+        try:
+            return await asyncio.wait_for(
+                self.llm_service.generate_agent_reply(
+                    agent_name=self.name,
+                    system_prompt=prompt,
+                    user_query=user_query,
+                    context=context,
+                    fallback=fallback,
+                ),
+                timeout=self.llm_service.settings.agent_response_timeout,
+            )
+        except asyncio.TimeoutError:
+            return fallback

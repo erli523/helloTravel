@@ -8,9 +8,18 @@
           Build a day-by-day itinerary with attractions, hotels, weather,
           budget, and images.
         </p>
+        <div class="route-visual" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
       </div>
 
       <form class="planner-form" @submit.prevent="handleSubmit">
+        <div class="form-heading">
+          <strong>Plan builder</strong>
+          <span>{{ formData.start_date }} · {{ formData.end_date }}</span>
+        </div>
         <label>
           <span>Destination city</span>
           <input v-model.trim="formData.city" required placeholder="Beijing" />
@@ -166,45 +175,104 @@ async function handleSubmit() {
 
 <style scoped>
 .home-page {
-  background: #eef6f4;
+  background:
+    linear-gradient(180deg, #eaf4f1 0%, #f8fafc 50%, #f7f3ea 100%);
   color: #0f172a;
   min-height: 100vh;
-  padding: 32px;
+  overflow-x: hidden;
+  padding: 40px 24px;
 }
 
 .hero-panel {
+  align-items: start;
   display: grid;
-  gap: 28px;
-  grid-template-columns: minmax(260px, 0.85fr) minmax(320px, 1fr);
+  gap: 36px;
+  grid-template-columns: minmax(280px, 0.82fr) minmax(360px, 1fr);
   margin: 0 auto;
-  max-width: 1120px;
+  max-width: 1180px;
 }
 
 .eyebrow {
   color: #0f766e;
+  font-size: 13px;
   font-weight: 700;
   margin: 0 0 8px;
+  text-transform: uppercase;
 }
 
 h1 {
-  font-size: 44px;
+  font-size: 56px;
   line-height: 1.05;
   margin: 0;
+  max-width: 560px;
 }
 
 .subtitle {
   color: #475569;
-  font-size: 18px;
+  font-size: 20px;
+  line-height: 1.45;
   max-width: 520px;
+}
+
+.route-visual {
+  background:
+    linear-gradient(90deg, #0f766e 0 32%, transparent 32% 38%, #102a43 38% 68%, transparent 68% 74%, #d97706 74% 100%);
+  border-radius: 8px;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(3, 1fr);
+  height: 8px;
+  margin-top: 34px;
+  max-width: 440px;
+  position: relative;
+}
+
+.route-visual span {
+  background: #ffffff;
+  border: 3px solid #0f766e;
+  border-radius: 50%;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  height: 22px;
+  justify-self: center;
+  margin-top: -7px;
+  width: 22px;
+}
+
+.route-visual span:nth-child(2) {
+  border-color: #102a43;
+}
+
+.route-visual span:nth-child(3) {
+  border-color: #d97706;
 }
 
 .planner-form {
   background: #ffffff;
-  border: 1px solid #dbe7e4;
+  border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
   display: grid;
   gap: 16px;
-  padding: 22px;
+  min-width: 0;
+  padding: 24px;
+}
+
+.form-heading {
+  align-items: center;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding-bottom: 14px;
+}
+
+.form-heading strong {
+  font-size: 18px;
+}
+
+.form-heading span {
+  color: #64748b;
+  font-size: 13px;
 }
 
 .grid-2 {
@@ -232,6 +300,14 @@ select {
   font: inherit;
   min-height: 42px;
   padding: 0 12px;
+  width: 100%;
+}
+
+input:focus,
+select:focus {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+  outline: none;
 }
 
 fieldset {
@@ -256,10 +332,19 @@ legend {
   gap: 6px;
   min-height: 36px;
   padding: 0 10px;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease;
 }
 
 .check-item input {
   min-height: auto;
+  width: auto;
+}
+
+.check-item:has(input:checked) {
+  background: #eef6f4;
+  border-color: #0f766e;
 }
 
 .progress-block {
@@ -298,6 +383,14 @@ button {
   font: inherit;
   font-weight: 700;
   min-height: 46px;
+  transition:
+    background 0.18s ease,
+    transform 0.18s ease;
+}
+
+button:hover:not(:disabled) {
+  background: #115e59;
+  transform: translateY(-1px);
 }
 
 button:disabled {
@@ -317,6 +410,11 @@ button:disabled {
 
   h1 {
     font-size: 34px;
+  }
+
+  .form-heading {
+    align-items: start;
+    display: grid;
   }
 }
 </style>

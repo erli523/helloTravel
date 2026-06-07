@@ -1,7 +1,10 @@
 """Multi-agent collaboration workflow for trip planning."""
 
+import asyncio
+
 from app.agents.attraction_agent import AttractionSearchAgent
 from app.agents.base_agent import AgentTrace
+from app.agents.food_agent import FoodRecommendationAgent
 from app.agents.hotel_agent import HotelAgent
 from app.agents.itinerary_agent import PlannerAgent
 from app.agents.weather_agent import WeatherQueryAgent
@@ -11,7 +14,7 @@ from app.services.llm_service import LLMService
 
 
 class TripPlannerAgent:
-    """Coordinates four specialized Agents into one planning workflow."""
+    """Coordinates specialized Agents into one planning workflow."""
 
     def __init__(self) -> None:
         self.amap_tools = AmapMCPToolset()
@@ -28,27 +31,41 @@ class TripPlannerAgent:
             amap_tools=self.amap_tools,
             llm_service=self.llm_service,
         )
+        self.food_agent = FoodRecommendationAgent(
+            amap_tools=self.amap_tools,
+            llm_service=self.llm_service,
+        )
         self.planner_agent = PlannerAgent(llm_service=self.llm_service)
         self.last_traces: list[AgentTrace] = []
 
     async def plan_trip(self, request: TravelPlanRequest) -> TripPlan:
         """Run the five-step collaboration process."""
 
-        attraction_result = await self.attraction_agent.run(request)
-        weather_result = await self.weather_agent.run(request)
-        hotel_result = await self.hotel_agent.run(request)
+        (
+            attraction_result,
+            weather_result,
+            hotel_result,
+            food_result,
+        ) = await asyncio.gather(
+            self.attraction_agent.run(request),
+            self.weather_agent.run(request),
+            self.hotel_agent.run(request),
+            self.food_agent.run(request),
+        )
 
         planner_query = self._build_planner_query(
             request=request,
             attraction_response=attraction_result.trace.summary,
             weather_response=weather_result.trace.summary,
             hotel_response=hotel_result.trace.summary,
+            food_response=food_result.trace.summary,
         )
         planner_result = await self.planner_agent.run(
             request=request,
             attractions=attraction_result.data,
             weather_info=weather_result.data,
             hotels=hotel_result.data,
+            meals=food_result.data,
             planner_query=planner_query,
         )
 
@@ -56,6 +73,7 @@ class TripPlannerAgent:
             attraction_result.trace,
             weather_result.trace,
             hotel_result.trace,
+            food_result.trace,
             planner_result.trace,
         ]
         return planner_result.data
@@ -66,6 +84,7 @@ class TripPlannerAgent:
         attraction_response: str,
         weather_response: str,
         hotel_response: str,
+        food_response: str,
     ) -> str:
         """Build the PlannerAgent query from user needs and specialist outputs."""
 
@@ -93,6 +112,9 @@ Weather information:
 
 Hotel information:
 {hotel_response}
+
+Food information:
+{food_response}
 
 Please generate a detailed plan including daily attractions, meals,
 hotel arrangement, transportation notes, practical suggestions, and budget details.

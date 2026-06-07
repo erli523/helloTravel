@@ -9,7 +9,8 @@ os.environ.setdefault("LLM_ENABLED", "false")
 from fastapi.testclient import TestClient
 
 from app.agents.attraction_agent import AttractionSearchAgent
-from app.models.travel import Attraction, DayPlan, Location, TravelPlanRequest, TripPlan
+from app.agents.itinerary_agent import PlannerAgent
+from app.models.travel import Attraction, DayPlan, Hotel, Location, Meal, TravelPlanRequest, TripPlan
 from app.services.trip_image_service import TripImageService
 from app.main import app
 
@@ -44,6 +45,8 @@ def test_create_travel_plan() -> None:
     assert data["plan"]["city"] == "Beijing"
     assert len(data["plan"]["days"]) == 2
     assert data["plan"]["budget"]["total"] > 0
+    assert data["plan"]["budget"]["hotel_nights"] == 1
+    assert data["plan"]["budget"]["details"]
 
 
 def test_agent_traces_are_exposed_after_plan() -> None:
@@ -55,6 +58,7 @@ def test_agent_traces_are_exposed_after_plan() -> None:
         "AttractionSearchAgent",
         "WeatherQueryAgent",
         "HotelAgent",
+        "FoodRecommendationAgent",
         "PlannerAgent",
     ]
     assert all("agent_response" in item for item in response.json())
@@ -97,6 +101,96 @@ def test_chongqing_mock_coordinates_use_chongqing_center() -> None:
 
     assert 106 <= longitude <= 107
     assert 29 <= latitude <= 30
+
+
+def test_real_chinese_poi_types_are_kept_as_attractions() -> None:
+    agent = AttractionSearchAgent()
+
+    assert agent._looks_like_attraction(
+        {
+            "name": "重庆自然博物馆",
+            "type": "科教文化服务;博物馆;博物馆",
+            "typecode": "140100",
+            "address": "重庆市北碚区",
+        }
+    )
+    assert not agent._looks_like_attraction(
+        {
+            "name": "某某火锅店",
+            "type": "餐饮服务;中餐厅;火锅店",
+            "typecode": "050117",
+            "address": "重庆市北碚区",
+        }
+    )
+
+
+def _minutes(value: str) -> int:
+    hour, minute = value.split(":", 1)
+    return int(hour) * 60 + int(minute)
+
+
+async def _build_continuity_plan() -> TripPlan:
+    request = TravelPlanRequest(
+        city="北碚",
+        start_date="2026-06-07",
+        end_date="2026-06-09",
+        travelers=2,
+        budget_level="comfort",
+        preferences=["culture", "nature", "food"],
+        transportation="public transit + walking",
+        accommodation="comfort",
+    )
+    attractions = [
+        Attraction(
+            name=f"北碚景点{i}",
+            address="北碚区",
+            location=Location(longitude=106.38 + i * 0.01, latitude=29.82 + i * 0.004),
+            visit_duration=120,
+            description="test",
+            category="景点",
+        )
+        for i in range(6)
+    ]
+    meals = [
+        Meal(
+            type="lunch" if i % 2 == 0 else "dinner",
+            name=f"北碚餐厅{i}",
+            address="北碚区",
+            location=Location(longitude=106.39 + i * 0.006, latitude=29.82),
+            estimated_cost=60,
+        )
+        for i in range(6)
+    ]
+    hotel = Hotel(
+        name="北碚中心酒店",
+        address="北碚区",
+        location=Location(longitude=106.395, latitude=29.82),
+        estimated_cost=580,
+    )
+    result = await PlannerAgent().run(
+        request=request,
+        attractions=attractions,
+        weather_info=[],
+        hotels=[hotel],
+        meals=meals,
+        planner_query="test",
+    )
+    return result.data
+
+
+def test_planner_keeps_schedule_continuous_and_consistent() -> None:
+    import asyncio
+
+    plan = asyncio.run(_build_continuity_plan())
+
+    for day in plan.days:
+        assert len(day.attractions) <= 2
+        scheduled_attractions = {
+            item.location for item in day.timeline if item.item_type == "attraction"
+        }
+        assert scheduled_attractions == {item.name for item in day.attractions}
+        for current, nxt in zip(day.timeline, day.timeline[1:]):
+            assert _minutes(nxt.time) - _minutes(current.end_time) < 90
 
 
 class FakeUnsplashService:

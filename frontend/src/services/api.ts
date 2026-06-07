@@ -10,7 +10,7 @@ import type {
 
 export const api = axios.create({
   baseURL: "/api",
-  timeout: 120000,
+  timeout: 300000,
   headers: {
     "Content-Type": "application/json"
   }
@@ -31,6 +31,17 @@ api.interceptors.response.use(
   },
   (error) => {
     console.error("Request failed:", error);
+    if (axios.isAxiosError(error) && error.code === "ECONNABORTED") {
+      return Promise.reject(
+        new Error(
+          "Planning timed out while waiting for external services. The request kept quality checks enabled; please retry when the network is steadier."
+        )
+      );
+    }
+    const detail = error.response?.data?.detail;
+    if (typeof detail === "string") {
+      return Promise.reject(new Error(detail));
+    }
     return Promise.reject(error);
   }
 );

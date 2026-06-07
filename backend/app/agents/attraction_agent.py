@@ -1,5 +1,6 @@
 """AttractionSearchAgent implementation."""
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -26,6 +27,11 @@ CITY_CENTERS: dict[str, tuple[float, float]] = {
     "杭州市": (120.15507, 30.274084),
     "西安": (108.93977, 34.341574),
     "西安市": (108.93977, 34.341574),
+    "北碚": (106.395593, 29.805197),
+    "北碚区": (106.395593, 29.805197),
+    "重庆北碚": (106.395593, 29.805197),
+    "南充": (106.110698, 30.837793),
+    "南充市": (106.110698, 30.837793),
 }
 
 
@@ -56,6 +62,15 @@ class AttractionSearchAgent(BaseAgent):
             detail_results = await self._fetch_detail_results(tool_results)
 
         attractions = self._attractions_from_details(detail_results, keywords)
+        if len(attractions) < max(4, request.days_count * 2):
+            attractions.extend(
+                self._attractions_from_search_results(
+                    tool_results=tool_results,
+                    keywords=keywords,
+                    existing_names={item.name for item in attractions},
+                    limit=max(6, request.days_count * 2),
+                )
+            )
         if not attractions:
             attractions = self._mock_attractions(request, keywords)
 
@@ -105,21 +120,42 @@ class AttractionSearchAgent(BaseAgent):
 
     def _select_keywords(self, preferences: list[str]) -> list[str]:
         mapping = {
-            "history": "museum",
-            "culture": "museum",
+            # English preferences
+            "history": "博物馆",
+            "culture": "博物馆",
+            "nature": "公园",
+            "food": "景点",
+            "family": "主题乐园",
+            "landmark": "地标景点",
+            "local culture": "地标景点",
+            "shopping": "商业街",
+            "night": "夜景",
+            "photography": "风景区",
+            "sports": "体育公园",
+            "art": "美术馆",
+            "architecture": "建筑景观",
+            "beach": "海滨",
+            "mountain": "山岳景区",
+            # Chinese preferences
             "历史文化": "博物馆",
             "文化": "博物馆",
-            "nature": "park",
             "自然风光": "公园",
             "自然": "公园",
-            "food": "old street",
-            "美食": "老街",
-            "family": "theme park",
+            "美食": "景点",
+            "购物": "商业街",
             "亲子": "主题乐园",
-            "landmark": "景点",
-            "local culture": "景点",
+            "夜游": "夜景",
+            "摄影": "风景区",
+            "网红": "网红景点",
+            "古镇": "古镇",
+            "寺庙": "寺庙",
+            "山水": "风景区",
+            "艺术": "美术馆",
+            "休闲": "公园",
         }
         keywords = [mapping.get(item, item) for item in preferences]
+        if "景点" not in keywords:
+            keywords.append("景点")
         return list(dict.fromkeys(keywords or ["景点"]))[:3]
 
     async def _fetch_detail_results(
@@ -140,15 +176,15 @@ class AttractionSearchAgent(BaseAgent):
             if len(poi_ids) >= 8:
                 break
 
-        detail_results = []
-        for poi_id in poi_ids:
-            detail_results.append(
-                await self.amap_tools.call_tool(
+        return await asyncio.gather(
+            *(
+                self.amap_tools.call_tool(
                     "amap_maps_search_detail",
                     {"id": poi_id},
                 )
+                for poi_id in poi_ids
             )
-        return detail_results
+        )
 
     def _attractions_from_details(
         self,
@@ -162,12 +198,37 @@ class AttractionSearchAgent(BaseAgent):
             if result.get("status") != "ok":
                 continue
             payload = self._parse_tool_payload(result.get("result"))
+            if not self._looks_like_attraction(payload):
+                continue
             attraction = self._attraction_from_payload(payload, keywords)
             if attraction is None or attraction.name in seen_names:
                 continue
             seen_names.add(attraction.name)
             attractions.append(attraction)
 
+        return attractions
+
+    def _attractions_from_search_results(
+        self,
+        *,
+        tool_results: list[dict[str, Any]],
+        keywords: list[str],
+        existing_names: set[str],
+        limit: int,
+    ) -> list[Attraction]:
+        attractions: list[Attraction] = []
+        for result in tool_results:
+            payload = self._parse_tool_payload(result.get("result"))
+            for poi in payload.get("pois", []):
+                if not self._looks_like_attraction(poi):
+                    continue
+                attraction = self._attraction_from_payload(poi, keywords)
+                if attraction is None or attraction.name in existing_names:
+                    continue
+                existing_names.add(attraction.name)
+                attractions.append(attraction)
+                if len(existing_names) >= limit:
+                    return attractions
         return attractions
 
     def _attraction_from_payload(
@@ -198,6 +259,22 @@ class AttractionSearchAgent(BaseAgent):
             image_url=photos.get("url") or None,
             ticket_price=ticket_price,
         )
+
+    def _looks_like_attraction(self, payload: dict[str, Any]) -> bool:
+        text = " ".join(
+            str(payload.get(key) or "") for key in ("name", "type", "typecode", "address")
+        )
+        blocked = (
+            "餐饮服务", "购物服务", "体育休闲服务", "生活服务", "公司",
+            "电子", "汽车", "住宿服务", "餐馆", "商场", "超市",
+        )
+        if any(item in text for item in blocked):
+            return False
+        allowed = (
+            "风景名胜", "科教文化", "公园", "博物馆", "纪念馆",
+            "旅游景点", "景区", "自然保护区", "国家级景点",
+        )
+        return any(item in text for item in allowed)
 
     def _parse_tool_payload(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
@@ -249,42 +326,42 @@ class AttractionSearchAgent(BaseAgent):
         )
         base_data = [
             (
-                f"{city} City Museum",
-                f"{city} central cultural district",
-                "A first-stop cultural landmark for learning local history.",
-                "culture",
+                f"{city}博物馆",
+                f"{city}市中心文化区",
+                "了解当地历史文化的必打卡地标。",
+                "文化",
                 60,
                 120,
                 0.0,
                 0.0,
             ),
             (
-                f"{city} Riverside Park",
-                f"{city} riverside area",
-                "A relaxed outdoor stop suitable for photos and walking.",
-                "nature",
+                f"{city}城市公园",
+                f"{city}滨水区",
+                "休闲放松、拍照散步的绝佳去处。",
+                "自然",
                 20,
-                150,
+                90,
                 0.012,
                 0.008,
             ),
             (
-                f"{city} Old Street",
-                f"{city} old town",
-                "A local street for snacks, shops, and evening atmosphere.",
-                "food",
+                f"{city}老街",
+                f"{city}老城区",
+                "品尝当地小吃、感受市井烟火气的特色街道。",
+                "文化",
                 0,
-                100,
+                90,
                 -0.014,
                 0.006,
             ),
             (
-                f"{city} Observation Tower",
-                f"{city} skyline area",
-                "A compact viewpoint for seeing the city layout.",
-                "landmark",
+                f"{city}观景台",
+                f"{city}制高点",
+                "俯瞰城市全景的绝佳视角点。",
+                "地标",
                 80,
-                90,
+                60,
                 0.018,
                 -0.01,
             ),

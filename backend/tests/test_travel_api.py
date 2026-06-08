@@ -11,8 +11,11 @@ from fastapi.testclient import TestClient
 from app.agents.attraction_agent import AttractionSearchAgent
 from app.agents.context_bus import PlanningContextBus
 from app.agents.food_agent import FoodRecommendationAgent
+from app.agents.hotel_agent import HotelAgent
 from app.agents.itinerary_agent import PlannerAgent
-from app.models.travel import Attraction, DayPlan, Hotel, Location, Meal, ScheduleItem, TravelPlanRequest, TripPlan
+from app.agents.trip_planner_agent import TripPlannerAgent
+from app.agents.weather_agent import WeatherQueryAgent
+from app.models.travel import Attraction, DayPlan, Hotel, Location, Meal, ScheduleItem, TravelPlanRequest, TripPlan, WeatherInfo
 from app.services.trip_image_service import TripImageService
 from app.main import app
 
@@ -311,6 +314,108 @@ def test_food_agent_assigns_meal_types_semantically() -> None:
     assert restaurant_types == ["lunch", "dinner"]
 
 
+def test_weather_agent_generates_semantic_weather_advice() -> None:
+    advice = WeatherQueryAgent._weather_advice(
+        [
+            WeatherInfo(
+                date="2026-06-07",
+                day_weather="阵雨",
+                night_weather="阵雨",
+                day_temp=28,
+                night_temp=20,
+                wind_direction="东",
+                wind_power="3",
+            ),
+            WeatherInfo(
+                date="2026-06-08",
+                day_weather="晴",
+                night_weather="晴",
+                day_temp=36,
+                night_temp=25,
+                wind_direction="东",
+                wind_power="3",
+            ),
+        ]
+    )
+
+    assert "降雨" in advice
+    assert "正午" in advice
+
+
+class FakeFoodLLM:
+    class Settings:
+        agent_response_timeout = 5
+
+    settings = Settings()
+
+    async def select_food_keywords(
+        self,
+        *,
+        city: str,
+        preferences: list[str],
+        fallback_keywords: list[str],
+    ) -> list[str]:
+        return ["bridge rice noodles", "tea house"]
+
+
+def test_food_agent_uses_llm_keywords_with_rule_fallback() -> None:
+    import asyncio
+
+    agent = FoodRecommendationAgent(llm_service=FakeFoodLLM())
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-08",
+        preferences=["food"],
+    )
+
+    keywords = asyncio.run(agent._select_keywords_with_llm(request, ["local food"]))
+
+    assert keywords[:2] == ["bridge rice noodles", "tea house"]
+    assert "local food" in keywords
+
+
+class FakeHotelLLM:
+    class Settings:
+        agent_response_timeout = 5
+
+    settings = Settings()
+
+    async def select_best_hotel(
+        self,
+        *,
+        candidates: list[dict],
+        request_context: dict,
+    ) -> dict[str, str]:
+        return {"hotel_name": "Hotel B", "reason": "Closer to the main attraction cluster."}
+
+
+def test_hotel_agent_llm_preference_is_consumed_by_planner() -> None:
+    import asyncio
+
+    context_bus = PlanningContextBus()
+    agent = HotelAgent(llm_service=FakeHotelLLM(), context_bus=context_bus)
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-08",
+        accommodation="comfort",
+    )
+    hotels = [
+        Hotel(name="Hotel A", estimated_cost=300, rating="4.9"),
+        Hotel(name="Hotel B", estimated_cost=350, rating="4.1"),
+    ]
+
+    selected = asyncio.run(agent._select_best_hotel_with_llm(request, hotels))
+    planner = PlannerAgent(context_bus=context_bus)
+
+    assert selected and selected["hotel_name"] == "Hotel B"
+    assert [hotel.name for hotel in hotels] == ["Hotel A", "Hotel B"]
+    assert context_bus.artifacts.get("preferred_hotel_name") is None
+    context_bus.put_artifact("preferred_hotel_name", selected["hotel_name"])
+    assert planner._select_best_hotel(hotels, []) == hotels[1]
+
+
 def test_schedule_gap_fill_and_time_safety() -> None:
     planner = PlannerAgent()
     schedule = [
@@ -412,6 +517,15 @@ class FakeRouteTools:
         }
 
 
+class CountingRouteTools(FakeRouteTools):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def call_tool(self, tool_name: str, arguments: dict) -> dict:
+        self.calls += 1
+        return await super().call_tool(tool_name, arguments)
+
+
 def test_planner_enriches_transit_with_amap_route_estimate() -> None:
     import asyncio
 
@@ -476,6 +590,69 @@ def test_planner_enriches_transit_with_amap_route_estimate() -> None:
     assert transit.end_time == "11:40"
     assert "40" in transit.notes
     assert "9.0" in transit.notes
+
+
+def test_planner_route_estimate_uses_request_scoped_cache() -> None:
+    import asyncio
+
+    tools = CountingRouteTools()
+    planner = PlannerAgent(amap_tools=tools)
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-07",
+        transportation="public transit + walking",
+    )
+    first = Attraction(
+        name="A",
+        address="A",
+        location=Location(longitude=106.0, latitude=29.0),
+        visit_duration=60,
+        description="A",
+        category="attraction",
+    )
+    second = Attraction(
+        name="B",
+        address="B",
+        location=Location(longitude=106.08, latitude=29.04),
+        visit_duration=60,
+        description="B",
+        category="attraction",
+    )
+
+    first_result = asyncio.run(planner._route_estimate(request, first, second))
+    second_result = asyncio.run(planner._route_estimate(request, first, second))
+
+    assert first_result == second_result
+    assert tools.calls == 1
+
+
+def test_timeline_attraction_matching_uses_activity_when_location_is_address() -> None:
+    attraction = Attraction(
+        name="Real Scenic Area",
+        address="Address",
+        location=Location(longitude=1, latitude=1),
+        visit_duration=60,
+        description="A",
+    )
+    timeline = [
+        ScheduleItem(
+            time="10:00",
+            end_time="11:00",
+            activity="Visit Real Scenic Area",
+            location="Some street address",
+            item_type="attraction",
+        )
+    ]
+
+    matched = PlannerAgent._nearest_timeline_attraction(
+        timeline,
+        {"Real Scenic Area": attraction},
+        start=0,
+        step=1,
+    )
+
+    assert matched == attraction
 
 
 def test_planner_react_loop_drives_route_action_from_observation() -> None:
@@ -558,6 +735,87 @@ def test_planner_react_loop_drives_route_action_from_observation() -> None:
         step["kind"] == "thought" and step["data"].get("action") == "enrich_routes"
         for step in snapshot["steps"]
     )
+
+
+class FakeReactLLM:
+    available = True
+
+    class Settings:
+        agent_response_timeout = 5
+
+    settings = Settings()
+
+    async def choose_react_action(
+        self,
+        *,
+        issues: list[dict],
+        available_actions: list[str],
+        executed_actions: list[str],
+    ) -> str:
+        assert "repair_timeline" in available_actions
+        return "repair_timeline"
+
+
+def test_planner_react_action_uses_rule_before_llm() -> None:
+    import asyncio
+
+    planner = PlannerAgent(llm_service=FakeReactLLM())
+    issues = [
+        {"code": "missing_route_estimate", "action": "enrich_routes"},
+        {"code": "timeline_overlap", "action": "repair_timeline"},
+    ]
+
+    action = asyncio.run(
+        planner._choose_react_action_with_llm(
+            issues=issues,
+            executed_actions=set(),
+        )
+    )
+
+    assert action == "enrich_routes"
+
+
+def test_planner_react_action_uses_llm_when_rule_cannot_decide() -> None:
+    import asyncio
+
+    planner = PlannerAgent(llm_service=FakeReactLLM())
+    issues = [
+        {"code": "ambiguous_quality_issue", "action": "needs_reasoning"},
+    ]
+
+    action = asyncio.run(
+        planner._choose_react_action_with_llm(
+            issues=issues,
+            executed_actions=set(),
+        )
+    )
+
+    assert action == "repair_timeline"
+
+
+def test_trip_planner_computes_context_centroid_for_phase_two_agents() -> None:
+    attractions = [
+        Attraction(
+            name="A",
+            address="Test一区",
+            location=Location(longitude=100.0, latitude=20.0),
+            visit_duration=60,
+            description="A",
+        ),
+        Attraction(
+            name="B",
+            address="Test二区",
+            location=Location(longitude=102.0, latitude=22.0),
+            visit_duration=60,
+            description="B",
+        ),
+    ]
+
+    centroid = TripPlannerAgent._compute_attraction_centroid(attractions)
+    districts = TripPlannerAgent._extract_attraction_districts(attractions)
+
+    assert centroid == {"longitude": 101.0, "latitude": 21.0}
+    assert districts == ["Test一区", "Test二区"]
 
 
 class FakeSplitLLM:

@@ -74,7 +74,8 @@ class FoodRecommendationAgent(BaseAgent):
     prompt_template = FOOD_AGENT_PROMPT
 
     async def run(self, request: TravelPlanRequest) -> AgentResult[list[Meal]]:
-        keywords = self._select_keywords(request)
+        fallback_keywords = self._select_keywords(request)
+        keywords = await self._select_keywords_with_llm(request, fallback_keywords)
         tool_calls = [
             f"[TOOL_CALL:amap_maps_text_search:keywords={keyword},city={request.city}]"
             for keyword in keywords
@@ -97,6 +98,7 @@ class FoodRecommendationAgent(BaseAgent):
         meals = self._meals_from_details(detail_results)
         if not meals:
             meals = self._fallback_meals(request)
+        meals = self._sort_meals_by_context_hint(meals)
         if self.context_bus is not None:
             meal_type_counts: dict[str, int] = {}
             for meal in meals:
@@ -105,7 +107,11 @@ class FoodRecommendationAgent(BaseAgent):
                 agent_name=self.name,
                 decision_type="food_filtering",
                 summary="Filtered real restaurant/snack POIs and assigned semantic meal types.",
-                inputs={"city": request.city, "keywords": keywords},
+                inputs={
+                    "city": request.city,
+                    "keywords": keywords,
+                    "fallback_keywords": fallback_keywords,
+                },
                 outputs={
                     "count": len(meals),
                     "meal_type_counts": meal_type_counts,
@@ -158,6 +164,52 @@ class FoodRecommendationAgent(BaseAgent):
         if city_keywords:
             return city_keywords[:4]
         return [f"{request.city}特色美食", f"{request.city}小吃", f"{request.city}餐厅"]
+
+    async def _select_keywords_with_llm(
+        self,
+        request: TravelPlanRequest,
+        fallback_keywords: list[str],
+    ) -> list[str]:
+        if self.llm_service is None:
+            return fallback_keywords
+        try:
+            llm_keywords = await asyncio.wait_for(
+                self.llm_service.select_food_keywords(
+                    city=request.city,
+                    preferences=request.preferences,
+                    fallback_keywords=fallback_keywords,
+                ),
+                timeout=self.llm_service.settings.agent_response_timeout,
+            )
+        except (AttributeError, asyncio.TimeoutError):
+            return fallback_keywords
+
+        if not llm_keywords:
+            return fallback_keywords
+        merged = [str(keyword).strip() for keyword in llm_keywords if str(keyword).strip()]
+        merged.extend(fallback_keywords)
+        return list(dict.fromkeys(merged))[:6] or fallback_keywords
+
+    def _sort_meals_by_context_hint(self, meals: list[Meal]) -> list[Meal]:
+        if self.context_bus is None or not meals:
+            return meals
+        centroid = self.context_bus.artifacts.get("attraction_centroid")
+        if not isinstance(centroid, dict):
+            return meals
+        lng = centroid.get("longitude")
+        lat = centroid.get("latitude")
+        if not isinstance(lng, (int, float)) or not isinstance(lat, (int, float)):
+            return meals
+
+        def score(meal: Meal) -> float:
+            if meal.location is None:
+                return 999.0
+            return (
+                (meal.location.longitude - float(lng)) ** 2
+                + (meal.location.latitude - float(lat)) ** 2
+            ) ** 0.5
+
+        return sorted(meals, key=score)
 
     async def _fetch_detail_results(
         self,

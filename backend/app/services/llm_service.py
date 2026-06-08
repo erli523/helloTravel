@@ -71,50 +71,6 @@ class LLMService:
 
     # ── Full itinerary planning (called once by PlannerAgent) ────────────
 
-    async def generate_itinerary(
-        self,
-        *,
-        system_prompt: str,
-        planning_context: str,
-    ) -> dict[str, Any] | None:
-        """
-        Ask LLM to produce a structured day-by-day itinerary.
-        Returns a parsed dict on success, or None on failure.
-        """
-        if not self.available:
-            return None
-
-        payload = {
-            "model": self.settings.llm_model_id,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": planning_context},
-            ],
-            "temperature": 0.4,
-            "max_tokens": 4000,
-        }
-        headers = {
-            "Authorization": f"Bearer {self.settings.llm_api_key}",
-            "Content-Type": "application/json",
-        }
-        endpoint = f"{self.settings.llm_base_url.rstrip('/')}/chat/completions"
-
-        try:
-            async with httpx.AsyncClient(timeout=self.settings.llm_timeout) as client:
-                response = await client.post(endpoint, headers=headers, json=payload)
-                response.raise_for_status()
-        except Exception as exc:
-            logger.warning("LLM itinerary generation failed: {}", exc)
-            return None
-
-        data = response.json()
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
-            return None
-
-        return self._parse_json_response(str(content))
-
     async def assign_itinerary_days(
         self,
         *,
@@ -160,10 +116,10 @@ class LLMService:
                 {
                     "role": "system",
                     "content": (
-                        "You are a travel schedule planner. Return only a JSON array. "
-                        "Each item must include time, end_time, activity, location, "
-                        "notes, and item_type. item_type must be one of attraction, "
-                        "meal, transit, rest. Keep the day between 08:30 and 20:00."
+                        "你是中文旅行日程规划专家。只返回 JSON 数组，不要输出解释文字。"
+                        "每一项必须包含 time、end_time、activity、location、notes、item_type。"
+                        "item_type 只能是 attraction、meal、transit、rest。"
+                        "所有 activity 和 notes 使用中文，时间控制在 08:30 到 20:00 之间。"
                     ),
                 },
                 {"role": "user", "content": day_context},
@@ -311,6 +267,168 @@ class LLMService:
             return None
         clean_names = [str(name).strip() for name in names if str(name).strip()]
         return list(dict.fromkeys(clean_names)) or None
+
+    async def choose_react_action(
+        self,
+        *,
+        issues: list[dict[str, Any]],
+        available_actions: list[str],
+        executed_actions: list[str],
+    ) -> str | None:
+        """Let PlannerAgent's ReAct loop choose the next repair action."""
+
+        if not self.available or not issues or not available_actions:
+            return None
+
+        payload = {
+            "model": self.settings.llm_model_id,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are PlannerAgent's ReAct controller. Choose exactly one "
+                        "next action from available_actions, or return null. Return "
+                        "only JSON: {\"action\":\"...\",\"reason\":\"...\"}. "
+                        "Prioritize actions that reduce user-visible itinerary defects."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "issues": issues[:12],
+                            "available_actions": available_actions,
+                            "executed_actions": executed_actions,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": 160,
+        }
+        content = await self._chat(
+            payload,
+            fallback="",
+            label="PlannerAgent.choose_react_action",
+        )
+        if not content:
+            return None
+        parsed = self._parse_json_any_response(content)
+        if isinstance(parsed, dict):
+            action = str(parsed.get("action") or "").strip()
+        else:
+            action = str(content).strip().strip('"')
+        return action if action in available_actions else None
+
+    async def select_food_keywords(
+        self,
+        *,
+        city: str,
+        preferences: list[str],
+        fallback_keywords: list[str],
+    ) -> list[str] | None:
+        """Ask FoodRecommendationAgent for city-specific food search keywords."""
+
+        if not self.available:
+            return None
+
+        payload = {
+            "model": self.settings.llm_model_id,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are FoodRecommendationAgent. Return only JSON with a "
+                        "keywords array. Generate 4-6 short Amap POI keywords for "
+                        "local restaurants, snack shops, food streets, or signature "
+                        "dishes in the city. Avoid retail, entertainment, and generic "
+                        "tourist attractions."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "city": city,
+                            "preferences": preferences,
+                            "fallback_keywords": fallback_keywords,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0.35,
+            "max_tokens": 360,
+        }
+        content = await self._chat(
+            payload,
+            fallback="",
+            label="FoodRecommendationAgent.select_keywords",
+        )
+        if not content:
+            return None
+        parsed = self._parse_json_any_response(content)
+        keywords = parsed.get("keywords") if isinstance(parsed, dict) else parsed
+        if not isinstance(keywords, list):
+            return None
+        clean = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
+        return list(dict.fromkeys(clean))[:6] or None
+
+    async def select_best_hotel(
+        self,
+        *,
+        candidates: list[dict[str, Any]],
+        request_context: dict[str, Any],
+    ) -> dict[str, str] | None:
+        """Ask HotelAgent to select the most suitable hotel candidate."""
+
+        if not self.available or not candidates:
+            return None
+
+        payload = {
+            "model": self.settings.llm_model_id,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are HotelAgent. Return only JSON with hotel_name and "
+                        "reason. Choose one exact hotel_name from candidates. Balance "
+                        "budget level, accommodation preference, rating, location, "
+                        "and suitability for the listed attraction area."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "request": request_context,
+                            "candidates": candidates[:12],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0.2,
+            "max_tokens": 260,
+        }
+        content = await self._chat(
+            payload,
+            fallback="",
+            label="HotelAgent.select_best_hotel",
+        )
+        if not content:
+            return None
+        parsed = self._parse_json_any_response(content)
+        if not isinstance(parsed, dict):
+            return None
+        hotel_name = str(parsed.get("hotel_name") or "").strip()
+        if not hotel_name:
+            return None
+        return {
+            "hotel_name": hotel_name,
+            "reason": str(parsed.get("reason") or "").strip(),
+        }
 
     # ── Internal helpers ─────────────────────────────────────────────────
 

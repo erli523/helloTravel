@@ -311,65 +311,6 @@ Rules:
         ]
         return "\n".join(lines)
 
-    def _format_planning_context(
-        self,
-        request: TravelPlanRequest,
-        attractions: list[Attraction],
-        weather_info: list[WeatherInfo],
-        hotels: list[Hotel],
-        meals: list[Meal],
-    ) -> str:
-        lines: list[str] = []
-
-        # User requirements
-        preferences = "、".join(request.preferences) or "通用旅游"
-        budget_note = f"（总预算上限：{request.budget}元）" if request.budget else ""
-        lines += [
-            "【用户需求】",
-            f"目的地：{request.city}，日期：{request.start_date} 至 {request.end_date}，"
-            f"共{request.days_count}天",
-            f"人数：{request.travelers}人，预算档次：{request.budget_level}{budget_note}",
-            f"偏好：{preferences}，交通：{request.transportation}，住宿：{request.accommodation}",
-            "",
-        ]
-
-        # Attractions (with coordinates for proximity reasoning)
-        lines.append(f"【候选景点】（共{len(attractions)}个，请使用原始名称）")
-        for i, att in enumerate(attractions, 1):
-            rating_str = f"{att.rating}" if att.rating is not None else "暂无"
-            lines.append(
-                f"{i}. {att.name} | {att.address} "
-                f"| 坐标({att.location.longitude:.4f},{att.location.latitude:.4f}) "
-                f"| 评分:{rating_str} | 门票:{att.ticket_price}元 "
-                f"| 建议游览:{att.visit_duration}分钟 | 类别:{att.category}"
-            )
-        lines.append("")
-
-        # Weather forecast
-        lines.append("【天气预报】")
-        for i, w in enumerate(weather_info, 1):
-            lines.append(
-                f"第{i}天 {w.date}：{w.day_weather}，"
-                f"{w.day_temp}℃/{w.night_temp}℃，{w.wind_direction}风{w.wind_power}级"
-            )
-        lines.append("")
-
-        # Hotels
-        lines.append(f"【候选酒店】（共{len(hotels)}个，请选最合适的1家）")
-        for i, h in enumerate(hotels, 1):
-            lines.append(
-                f"{i}. {h.name} | {h.address} | {h.price_range} | 评分:{h.rating}"
-            )
-        lines.append("")
-
-        # Meals
-        lines.append(f"【候选餐厅】（共{len(meals)}个，每天午餐和晚餐各选1家）")
-        for i, m in enumerate(meals, 1):
-            addr = m.address or "地址未知"
-            lines.append(f"{i}. {m.name} | {addr} | 人均:{m.estimated_cost}元")
-
-        return "\n".join(lines)
-
     def _build_days_from_llm(
         self,
         request: TravelPlanRequest,
@@ -755,6 +696,14 @@ Rules:
     ) -> Hotel | None:
         if not hotels:
             return None
+        if self.context_bus is not None:
+            preferred_name = self.context_bus.artifacts.get("preferred_hotel_name")
+            preferred_hotel = self._find_hotel(
+                str(preferred_name) if preferred_name else None,
+                hotels,
+            )
+            if preferred_hotel is not None:
+                return preferred_hotel
         if not attractions:
             return max(hotels, key=self._hotel_rating_float)
 
@@ -1051,7 +1000,10 @@ Rules:
                     issues=issues,
                 )
 
-            action = self._choose_react_action(issues, executed_actions)
+            action = await self._choose_react_action_with_llm(
+                issues=issues,
+                executed_actions=executed_actions,
+            )
             if action is None:
                 break
 
@@ -1227,6 +1179,48 @@ Rules:
             if action in observed_actions and action not in executed_actions:
                 return action
         return None
+
+    async def _choose_react_action_with_llm(
+        self,
+        *,
+        issues: list[dict[str, Any]],
+        executed_actions: set[str],
+    ) -> str | None:
+        if not issues:
+            return None
+
+        rule_action = self._choose_react_action(issues, executed_actions)
+        if rule_action is not None:
+            return rule_action
+
+        available_actions = [
+            action
+            for action in ["enrich_routes", "repair_timeline", "rebalance_day_load"]
+            if action not in executed_actions
+        ]
+        if not available_actions:
+            return None
+
+        llm = self.llm_service
+        if llm is not None and getattr(llm, "available", False):
+            try:
+                action = await asyncio.wait_for(
+                    llm.choose_react_action(
+                        issues=[
+                            issue for issue in issues
+                            if issue.get("action") in available_actions
+                        ],
+                        available_actions=available_actions,
+                        executed_actions=sorted(executed_actions),
+                    ),
+                    timeout=getattr(llm.settings, "agent_response_timeout", 20.0),
+                )
+                if action in available_actions:
+                    return action
+            except (AttributeError, asyncio.TimeoutError):
+                pass
+
+        return self._choose_react_action(issues, executed_actions)
 
     def _day_has_unestimated_transit(self, day: DayPlan) -> bool:
         if len(day.attractions) < 2:
@@ -1433,10 +1427,25 @@ Rules:
         while 0 <= index < len(timeline):
             item = timeline[index]
             if item.item_type == "attraction":
-                attraction = attractions_by_name.get(item.location)
+                attraction = PlannerAgent._match_timeline_attraction(item, attractions_by_name)
                 if attraction is not None:
                     return attraction
             index += step
+        return None
+
+    @staticmethod
+    def _match_timeline_attraction(
+        item: ScheduleItem,
+        attractions_by_name: dict[str, Attraction],
+    ) -> Attraction | None:
+        candidates = [item.location, item.activity]
+        for value in candidates:
+            if value in attractions_by_name:
+                return attractions_by_name[value]
+        text = " ".join(candidates)
+        for name, attraction in attractions_by_name.items():
+            if name and name in text:
+                return attraction
         return None
 
     async def _route_estimate(
@@ -1463,6 +1472,16 @@ Rules:
         else:
             tool_name = "amap_maps_direction_driving"
 
+        cache_key = (
+            self._coord(origin.location),
+            self._coord(destination.location),
+            tool_name,
+            request.city,
+        )
+        route_cache = self._route_cache()
+        if cache_key in route_cache:
+            return route_cache[cache_key]
+
         result = await self.amap_tools.call_tool(
             tool_name,
             {
@@ -1482,7 +1501,16 @@ Rules:
             mode_note = "驾车/打车衔接"
         else:
             mode_note = "公交/地铁衔接"
-        return duration_min, route_distance_km, mode_note
+        estimate_with_note = (duration_min, route_distance_km, mode_note)
+        route_cache[cache_key] = estimate_with_note
+        return estimate_with_note
+
+    def _route_cache(self) -> dict[tuple[str, str, str, str], tuple[int, float, str]]:
+        cache = getattr(self, "_route_estimate_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_route_estimate_cache", cache)
+        return cache
 
     @staticmethod
     def _coord(location: Any) -> str:

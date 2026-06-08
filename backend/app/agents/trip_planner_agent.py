@@ -9,7 +9,7 @@ from app.agents.food_agent import FoodRecommendationAgent
 from app.agents.hotel_agent import HotelAgent
 from app.agents.itinerary_agent import PlannerAgent
 from app.agents.weather_agent import WeatherQueryAgent
-from app.models.travel import TravelPlanRequest, TripPlan
+from app.models.travel import Attraction, TravelPlanRequest, TripPlan
 from app.services.mcp_client import AmapMCPToolset
 from app.services.llm_service import LLMService
 
@@ -57,14 +57,27 @@ class TripPlannerAgent:
             transportation=request.transportation,
         )
 
-        (
-            attraction_result,
-            weather_result,
-            hotel_result,
-            food_result,
-        ) = await asyncio.gather(
-            self.attraction_agent.run(request),
-            self.weather_agent.run(request),
+        attraction_result, weather_result = await self._run_phase_one_with_timeout(
+            request,
+            timeout=min(45.0, max(20.0, self.llm_service.settings.planning_timeout * 0.35)),
+        )
+        context_bus.put_artifact(
+            "attraction_centroid",
+            self._compute_attraction_centroid(attraction_result.data),
+        )
+        context_bus.put_artifact(
+            "attraction_districts",
+            self._extract_attraction_districts(attraction_result.data),
+        )
+        context_bus.result(
+            "TripPlannerAgent",
+            "Phase 1 completed; attraction geography is now available to hotel and food agents.",
+            attractions=len(attraction_result.data),
+            weather_days=len(weather_result.data),
+            attraction_centroid=context_bus.artifacts.get("attraction_centroid"),
+        )
+
+        hotel_result, food_result = await asyncio.gather(
             self.hotel_agent.run(request),
             self.food_agent.run(request),
         )
@@ -112,6 +125,51 @@ class TripPlannerAgent:
             self.planner_agent,
         ):
             agent.set_context_bus(context_bus)
+
+    async def _run_phase_one_with_timeout(
+        self,
+        request: TravelPlanRequest,
+        *,
+        timeout: float,
+    ):
+        try:
+            return await asyncio.wait_for(
+                asyncio.gather(
+                    self.attraction_agent.run(request),
+                    self.weather_agent.run(request),
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            fallback_attraction_agent = AttractionSearchAgent()
+            fallback_weather_agent = WeatherQueryAgent()
+            return await asyncio.gather(
+                fallback_attraction_agent.run(request),
+                fallback_weather_agent.run(request),
+            )
+
+    @staticmethod
+    def _compute_attraction_centroid(attractions: list[Attraction]) -> dict[str, float] | None:
+        if not attractions:
+            return None
+        return {
+            "longitude": sum(item.location.longitude for item in attractions) / len(attractions),
+            "latitude": sum(item.location.latitude for item in attractions) / len(attractions),
+        }
+
+    @staticmethod
+    def _extract_attraction_districts(attractions: list[Attraction]) -> list[str]:
+        districts: list[str] = []
+        for item in attractions:
+            address = item.address or ""
+            for suffix in ("区", "县", "市"):
+                index = address.find(suffix)
+                if index > 0:
+                    district = address[: index + 1]
+                    if district not in districts:
+                        districts.append(district)
+                    break
+        return districts[:6]
 
     def _build_planner_query(
         self,

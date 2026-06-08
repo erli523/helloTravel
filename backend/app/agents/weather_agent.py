@@ -50,6 +50,9 @@ class WeatherQueryAgent(BaseAgent):
             "调用高德天气工具获取目的地预报，按旅行日期逐天解析"
             "天气状况、气温和风力，为行程安排提供参考。"
         )
+        weather_advice = self._weather_advice(weather_info)
+        if weather_advice:
+            reasoning_summary += f" {weather_advice}"
         context = "\n".join(
             f"- {w.date}：{w.day_weather}，白天{w.day_temp}℃/夜间{w.night_temp}℃，"
             f"{w.wind_direction}风{w.wind_power}级"
@@ -59,7 +62,10 @@ class WeatherQueryAgent(BaseAgent):
             prompt=prompt,
             user_query=query,
             context=f"{reasoning_summary}\n工具状态：{summary}\n天气详情：\n{context}",
-            fallback=f"已整理 {request.city} 旅行期间天气信息，请关注出行当天实时天气。",
+            fallback=(
+                f"已整理 {request.city} 旅行期间天气信息，请关注出行当天实时天气。"
+                + (f" {weather_advice}" if weather_advice else "")
+            ),
         )
 
         return AgentResult(
@@ -75,6 +81,23 @@ class WeatherQueryAgent(BaseAgent):
                 context=self.context_summary(),
             ),
         )
+
+    @staticmethod
+    def _weather_advice(weather_info: list[WeatherInfo]) -> str:
+        rainy_days = [
+            item for item in weather_info
+            if any(token in item.day_weather for token in ("雨", "雷", "阵雨", "snow", "rain"))
+        ]
+        hot_days = [item for item in weather_info if item.day_temp >= 35]
+        cold_days = [item for item in weather_info if item.night_temp <= 5]
+        advice: list[str] = []
+        if rainy_days:
+            advice.append(f"{len(rainy_days)} 天可能降雨，建议准备雨具并保留室内备选景点。")
+        if hot_days:
+            advice.append("部分日期白天气温较高，建议避开正午户外长时间步行。")
+        if cold_days:
+            advice.append("夜间温度偏低，晚间活动需要注意保暖。")
+        return " ".join(advice)
 
     # ── Weather parsing ──────────────────────────────────────────────────
 

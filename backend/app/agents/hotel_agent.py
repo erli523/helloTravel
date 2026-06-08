@@ -35,6 +35,8 @@ class HotelAgent(BaseAgent):
         hotels = self._hotels_from_details(detail_results, request)
         if not hotels:
             hotels = self._fallback_hotels(request)
+        hotels = self._sort_hotels_by_context_hint(hotels)
+        preferred_hotel = await self._select_best_hotel_with_llm(request, hotels)
         if self.context_bus is not None:
             self.context_bus.decide(
                 agent_name=self.name,
@@ -48,8 +50,12 @@ class HotelAgent(BaseAgent):
                 outputs={
                     "count": len(hotels),
                     "hotels": [hotel.name for hotel in hotels[:6]],
+                    "preferred_hotel": preferred_hotel,
                 },
             )
+            if preferred_hotel:
+                self.context_bus.put_artifact("preferred_hotel_name", preferred_hotel["hotel_name"])
+                self.context_bus.put_artifact("preferred_hotel_reason", preferred_hotel["reason"])
             self.context_bus.put_artifact(
                 "hotels",
                 [{"name": hotel.name, "estimated_cost": hotel.estimated_cost} for hotel in hotels],
@@ -69,6 +75,11 @@ class HotelAgent(BaseAgent):
             "hotel POI search, filtered hotel/lodging POIs, and normalized rating, "
             "address, coordinate, and estimated nightly cost."
         )
+        if preferred_hotel and preferred_hotel.get("reason"):
+            reasoning_summary += (
+                f" LLM preferred {preferred_hotel['hotel_name']}: "
+                f"{preferred_hotel['reason']}"
+            )
         context = "\n".join(
             [
                 f"- {item.name}: {item.address}, rating={item.rating}, "
@@ -106,6 +117,81 @@ class HotelAgent(BaseAgent):
         if request.budget_level == "premium" or request.accommodation == "premium":
             return "高档酒店"
         return "舒适型酒店"
+
+    async def _select_best_hotel_with_llm(
+        self,
+        request: TravelPlanRequest,
+        hotels: list[Hotel],
+    ) -> dict[str, str] | None:
+        if self.llm_service is None or not hotels:
+            return None
+
+        centroid = self.context_bus.artifacts.get("attraction_centroid") if self.context_bus else None
+        candidates = [
+            {
+                "name": hotel.name,
+                "address": hotel.address,
+                "rating": hotel.rating,
+                "price_range": hotel.price_range,
+                "estimated_cost": hotel.estimated_cost,
+                "distance": hotel.distance,
+            }
+            for hotel in hotels[:12]
+        ]
+        try:
+            selected = await asyncio.wait_for(
+                self.llm_service.select_best_hotel(
+                    candidates=candidates,
+                    request_context={
+                        "city": request.city,
+                        "budget_level": request.budget_level,
+                        "budget": request.budget,
+                        "accommodation": request.accommodation,
+                        "attraction_centroid": centroid,
+                    },
+                ),
+                timeout=self.llm_service.settings.agent_response_timeout,
+            )
+        except (AttributeError, asyncio.TimeoutError):
+            return None
+
+        if not selected:
+            return None
+        selected_name = selected.get("hotel_name")
+        if selected_name not in {hotel.name for hotel in hotels}:
+            return None
+        return selected
+
+    def _sort_hotels_by_context_hint(self, hotels: list[Hotel]) -> list[Hotel]:
+        if self.context_bus is None or not hotels:
+            return hotels
+        centroid = self.context_bus.artifacts.get("attraction_centroid")
+        if not isinstance(centroid, dict):
+            return hotels
+        lng = centroid.get("longitude")
+        lat = centroid.get("latitude")
+        if not isinstance(lng, (int, float)) or not isinstance(lat, (int, float)):
+            return hotels
+
+        def score(hotel: Hotel) -> float:
+            rating = self._rating_float(hotel.rating)
+            if hotel.location is None:
+                distance = 0.2
+            else:
+                distance = (
+                    (hotel.location.longitude - float(lng)) ** 2
+                    + (hotel.location.latitude - float(lat)) ** 2
+                ) ** 0.5
+            return distance - rating * 0.01
+
+        return sorted(hotels, key=score)
+
+    @staticmethod
+    def _rating_float(value: str) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 3.5
 
     async def _fetch_detail_results(
         self,

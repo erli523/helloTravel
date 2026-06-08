@@ -90,7 +90,7 @@ class BaseAgent:
                     context=context,
                     fallback=fallback,
                 ),
-                timeout=self.llm_service.settings.agent_response_timeout,
+                timeout=self.llm_service.settings.agent_trace_response_timeout,
             )
         except asyncio.TimeoutError:
             return fallback

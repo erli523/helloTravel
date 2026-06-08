@@ -10,7 +10,7 @@ import type {
 
 export const api = axios.create({
   baseURL: "/api",
-  timeout: 300000,
+  timeout: 420000,
   headers: {
     "Content-Type": "application/json"
   }

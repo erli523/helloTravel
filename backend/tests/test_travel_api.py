@@ -221,6 +221,54 @@ def test_mcp_missing_expanded_tool_uses_bounded_fallback() -> None:
     assert result["status"] == "missing_tool"
     assert "not expanded" in result["message"]
 
+
+def test_mcp_degrades_after_encoding_failure() -> None:
+    import asyncio
+
+    class BrokenTool:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, arguments: dict) -> str:
+            self.calls += 1
+            raise UnicodeEncodeError("gbk", "📝", 0, 1, "illegal multibyte sequence")
+
+    async def fake_rest(tool_name: str, arguments: dict) -> dict:
+        return {"pois": []}
+
+    settings = Settings(
+        AMAP_MCP_ENABLED=True,
+        AMAP_REST_PREFERRED=False,
+        AMAP_API_KEY="",
+    )
+    tool = BrokenTool()
+    toolset = AmapMCPToolset(
+        settings=settings,
+        tool=object(),
+        expanded_tools={"amap_maps_text_search": tool},
+    )
+    toolset._call_amap_rest = fake_rest
+
+    first = asyncio.run(
+        toolset.call_tool(
+            "amap_maps_text_search",
+            {"keywords": "attraction", "city": "test-city"},
+        )
+    )
+    second = asyncio.run(
+        toolset.call_tool(
+            "amap_maps_text_search",
+            {"keywords": "hotel", "city": "test-city"},
+        )
+    )
+
+    assert first["status"] == "ok"
+    assert first["mcp_status"] == "error"
+    assert second["status"] == "ok"
+    assert second["mcp_status"] == "degraded"
+    assert tool.calls == 1
+
+
 class FakeAttractionLLM:
     class Settings:
         agent_response_timeout = 5

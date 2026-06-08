@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     llm_base_url: str = Field(default="https://api.deepseek.com/v1", alias="LLM_BASE_URL")
     llm_timeout: float = Field(default=60.0, alias="LLM_TIMEOUT")
     agent_response_timeout: float = Field(default=20.0, alias="AGENT_RESPONSE_TIMEOUT")
+    agent_trace_response_timeout: float = Field(default=6.0, alias="AGENT_TRACE_RESPONSE_TIMEOUT")
     planning_timeout: float = Field(default=150.0, alias="PLANNING_TIMEOUT")
     react_debug_enabled: bool = Field(default=True, alias="REACT_DEBUG_ENABLED")
 

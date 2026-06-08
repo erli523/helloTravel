@@ -483,6 +483,10 @@ class LLMService:
             except json.JSONDecodeError:
                 pass
 
+        parsed = self._decode_first_json_value(content, "{")
+        if isinstance(parsed, dict):
+            return parsed
+
         # Extract the first JSON object found anywhere in the response
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if match:
@@ -519,16 +523,23 @@ class LLMService:
         if not start_candidates:
             return None
         start = min(start_candidates)
-        opener = content[start]
-        closer = "}" if opener == "{" else "]"
-        end = content.rfind(closer)
-        if end <= start:
-            return None
-        try:
-            return json.loads(content[start : end + 1])
-        except json.JSONDecodeError:
-            logger.warning(
-                "Could not parse JSON from LLM response (first 300 chars): {}",
-                content[:300],
-            )
-            return None
+        parsed = self._decode_first_json_value(content[start:], content[start])
+        if parsed is not None:
+            return parsed
+        logger.warning(
+            "Could not parse JSON from LLM response (first 300 chars): {}",
+            content[:300],
+        )
+        return None
+
+    @staticmethod
+    def _decode_first_json_value(content: str, opener: str) -> Any | None:
+        decoder = json.JSONDecoder()
+        start = content.find(opener)
+        while start >= 0:
+            try:
+                value, _ = decoder.raw_decode(content[start:])
+                return value
+            except json.JSONDecodeError:
+                start = content.find(opener, start + 1)
+        return None

@@ -39,6 +39,7 @@ class AmapMCPToolset:
     tool: Any | None = None
     expanded_tools: dict[str, Any] = field(default_factory=dict)
     startup_error: str | None = None
+    degraded_reason: str | None = None
     _call_semaphore: asyncio.Semaphore = field(
         default_factory=lambda: asyncio.Semaphore(4),
         init=False,
@@ -69,6 +70,11 @@ class AmapMCPToolset:
             )
         if self.settings.amap_rest_preferred and self.settings.amap_api_key:
             return "Amap REST preferred for supported tools; MCP is not enabled."
+        if self.degraded_reason:
+            return (
+                "Amap MCP is enabled but currently degraded; supported tools use "
+                f"bounded REST fallback. Reason: {self.degraded_reason}"
+            )
         if self.enabled:
             return f"Amap MCP enabled via `{command}` with {len(self.tool_names)} tools."
         if self.startup_error:
@@ -121,6 +127,17 @@ class AmapMCPToolset:
                 "message": self.describe(),
             }
 
+        if self.degraded_reason:
+            return await self._rest_fallback(
+                tool_name,
+                arguments,
+                fallback_status="degraded",
+                fallback_message=(
+                    "MCP was degraded after a previous runtime failure; "
+                    f"using bounded Amap REST fallback. Reason: {self.degraded_reason}"
+                ),
+            )
+
         tool = self.expanded_tools.get(tool_name)
         if tool is None:
             return await self._rest_fallback(
@@ -150,6 +167,8 @@ class AmapMCPToolset:
                 ),
             )
         except Exception as exc:
+            if self._looks_like_encoding_failure(str(exc)):
+                self.degraded_reason = str(exc)
             return await self._rest_fallback(
                 tool_name,
                 arguments,
@@ -157,6 +176,7 @@ class AmapMCPToolset:
                 fallback_message=str(exc),
             )
         if self._looks_like_encoding_failure(result):
+            self.degraded_reason = str(result)
             return await self._rest_fallback(
                 tool_name,
                 arguments,

@@ -35,6 +35,25 @@ class HotelAgent(BaseAgent):
         hotels = self._hotels_from_details(detail_results, request)
         if not hotels:
             hotels = self._fallback_hotels(request)
+        if self.context_bus is not None:
+            self.context_bus.decide(
+                agent_name=self.name,
+                decision_type="hotel_filtering",
+                summary="Filtered lodging POIs and estimated nightly hotel cost.",
+                inputs={
+                    "city": request.city,
+                    "accommodation": request.accommodation,
+                    "keywords": keywords,
+                },
+                outputs={
+                    "count": len(hotels),
+                    "hotels": [hotel.name for hotel in hotels[:6]],
+                },
+            )
+            self.context_bus.put_artifact(
+                "hotels",
+                [{"name": hotel.name, "estimated_cost": hotel.estimated_cost} for hotel in hotels],
+            )
 
         prompt = self.render_prompt(
             city=request.city,
@@ -77,6 +96,7 @@ class HotelAgent(BaseAgent):
                 summary=summary,
                 reasoning_summary=reasoning_summary,
                 agent_response=agent_response,
+                context=self.context_summary(),
             ),
         )
 

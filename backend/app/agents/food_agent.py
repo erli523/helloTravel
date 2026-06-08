@@ -97,6 +97,25 @@ class FoodRecommendationAgent(BaseAgent):
         meals = self._meals_from_details(detail_results)
         if not meals:
             meals = self._fallback_meals(request)
+        if self.context_bus is not None:
+            meal_type_counts: dict[str, int] = {}
+            for meal in meals:
+                meal_type_counts[meal.type] = meal_type_counts.get(meal.type, 0) + 1
+            self.context_bus.decide(
+                agent_name=self.name,
+                decision_type="food_filtering",
+                summary="Filtered real restaurant/snack POIs and assigned semantic meal types.",
+                inputs={"city": request.city, "keywords": keywords},
+                outputs={
+                    "count": len(meals),
+                    "meal_type_counts": meal_type_counts,
+                    "meals": [meal.name for meal in meals[:8]],
+                },
+            )
+            self.context_bus.put_artifact(
+                "meals",
+                [{"name": meal.name, "type": meal.type, "cost": meal.estimated_cost} for meal in meals],
+            )
 
         query = f"Search local food in {request.city} for preferences: {request.preferences}"
         summary = f"Recommended {len(meals)} food stops. {self._source_summary(tool_results, detail_results)}"
@@ -127,6 +146,7 @@ class FoodRecommendationAgent(BaseAgent):
                 summary=summary,
                 reasoning_summary=reasoning_summary,
                 agent_response=agent_response,
+                context=self.context_summary(),
             ),
         )
 

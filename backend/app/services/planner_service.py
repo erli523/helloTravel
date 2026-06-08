@@ -81,5 +81,8 @@ class PlannerService:
     def get_last_traces(self) -> list[AgentTrace]:
         return self.trip_planner_agent.last_traces
 
+    def get_last_context(self) -> dict:
+        return self.trip_planner_agent.last_context
+
     def get_image_service_status(self) -> dict:
         return self.trip_image_service.status()

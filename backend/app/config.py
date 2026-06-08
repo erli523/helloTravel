@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     llm_timeout: float = Field(default=60.0, alias="LLM_TIMEOUT")
     agent_response_timeout: float = Field(default=20.0, alias="AGENT_RESPONSE_TIMEOUT")
     planning_timeout: float = Field(default=150.0, alias="PLANNING_TIMEOUT")
+    react_debug_enabled: bool = Field(default=True, alias="REACT_DEBUG_ENABLED")
 
     dashscope_api_key: str = Field(default="", alias="DASHSCOPE_API_KEY")
     dashscope_base_url: str = Field(

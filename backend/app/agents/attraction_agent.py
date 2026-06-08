@@ -192,6 +192,20 @@ class AttractionSearchAgent(BaseAgent):
         preferences = request.preferences or ["landmark", "local culture"]
         fallback_keywords = self._select_keywords(preferences)
         keywords = await self._select_keywords_with_llm(request, fallback_keywords)
+        if self.context_bus is not None:
+            self.context_bus.observe(
+                self.name,
+                "Prepared attraction search intents.",
+                city=request.city,
+                preferences=preferences,
+            )
+            self.context_bus.decide(
+                agent_name=self.name,
+                decision_type="keyword_selection",
+                summary="Selected diverse OR-style POI keywords for attraction search.",
+                inputs={"preferences": preferences},
+                outputs={"keywords": keywords, "fallback_keywords": fallback_keywords},
+            )
         tool_calls = [
             f"[TOOL_CALL:amap_maps_text_search:keywords={keyword},city={request.city}]"
             for keyword in keywords
@@ -239,6 +253,17 @@ class AttractionSearchAgent(BaseAgent):
             preferences=preferences,
             target_count=target_count,
         )
+        if self.context_bus is not None:
+            self.context_bus.result(
+                self.name,
+                "Attraction candidates ranked and diversified.",
+                count=len(attractions),
+                names=[item.name for item in attractions[:8]],
+            )
+            self.context_bus.put_artifact(
+                "attractions",
+                [{"name": item.name, "category": item.category} for item in attractions],
+            )
 
         query = f"Search {request.city} attractions for preferences: {preferences}"
         prompt = self.render_prompt(
@@ -281,6 +306,7 @@ class AttractionSearchAgent(BaseAgent):
                 summary=summary,
                 reasoning_summary=reasoning_summary,
                 agent_response=agent_response,
+                context=self.context_summary(),
             ),
         )
 

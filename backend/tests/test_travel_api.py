@@ -9,6 +9,7 @@ os.environ.setdefault("LLM_ENABLED", "false")
 from fastapi.testclient import TestClient
 
 from app.agents.attraction_agent import AttractionSearchAgent
+from app.agents.context_bus import PlanningContextBus
 from app.agents.food_agent import FoodRecommendationAgent
 from app.agents.itinerary_agent import PlannerAgent
 from app.models.travel import Attraction, DayPlan, Hotel, Location, Meal, ScheduleItem, TravelPlanRequest, TripPlan
@@ -64,6 +65,18 @@ def test_agent_traces_are_exposed_after_plan() -> None:
     ]
     assert all("agent_response" in item for item in response.json())
     assert all("reasoning_summary" in item for item in response.json())
+    assert all("context" in item for item in response.json())
+
+
+def test_context_bus_is_exposed_after_plan() -> None:
+    response = client.get("/api/travel/context")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "steps" in data
+    assert "decisions" in data
+    assert any(item["agent_name"] == "AttractionSearchAgent" for item in data["decisions"])
+    assert any(item["agent_name"] == "PlannerAgent" for item in data["steps"])
 
 
 def test_integrations_status() -> None:
@@ -74,6 +87,7 @@ def test_integrations_status() -> None:
     assert "unsplash" in data
     assert "amap_mcp" in data
     assert data["unsplash"]["available"] is False
+    assert data["react_debug"]["context_endpoint"] == "/api/travel/context"
 
 
 def test_image_search_without_key_returns_empty_list() -> None:
@@ -340,6 +354,210 @@ def test_schedule_gap_fill_and_time_safety() -> None:
     for item in filled:
         assert _minutes(item.end_time) > _minutes(item.time)
         assert _minutes(item.end_time) <= 20 * 60
+
+
+def test_planner_quality_gate_repairs_overlapping_timeline() -> None:
+    planner = PlannerAgent()
+    timeline = [
+        ScheduleItem(
+            time="10:00",
+            end_time="11:00",
+            activity="A",
+            location="A",
+            item_type="attraction",
+        ),
+        ScheduleItem(
+            time="10:45",
+            end_time="11:10",
+            activity="Transit",
+            location="",
+            item_type="transit",
+        ),
+        ScheduleItem(
+            time="11:05",
+            end_time="12:00",
+            activity="B",
+            location="B",
+            item_type="attraction",
+        ),
+    ]
+
+    repaired, notes = planner._repair_timeline(timeline)
+
+    assert notes
+    assert [item.activity for item in repaired] == ["A", "Transit", "B"]
+    assert repaired[1].time == "11:00"
+    assert repaired[2].time >= repaired[1].end_time
+    for first, second in zip(repaired, repaired[1:]):
+        assert _minutes(first.end_time) <= _minutes(second.time)
+
+
+class FakeRouteTools:
+    async def call_tool(self, tool_name: str, arguments: dict) -> dict:
+        assert tool_name == "amap_maps_direction_transit_integrated"
+        assert arguments["origin"] == "106.0,29.0"
+        assert arguments["destination"] == "106.08,29.04"
+        return {
+            "status": "ok",
+            "result": {
+                "route": {
+                    "transits": [
+                        {
+                            "duration": "2400",
+                            "distance": "9000",
+                        }
+                    ]
+                }
+            },
+        }
+
+
+def test_planner_enriches_transit_with_amap_route_estimate() -> None:
+    import asyncio
+
+    planner = PlannerAgent(amap_tools=FakeRouteTools())
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-07",
+        transportation="public transit + walking",
+    )
+    first = Attraction(
+        name="A",
+        address="A",
+        location=Location(longitude=106.0, latitude=29.0),
+        visit_duration=60,
+        description="A",
+        category="attraction",
+    )
+    second = Attraction(
+        name="B",
+        address="B",
+        location=Location(longitude=106.08, latitude=29.04),
+        visit_duration=60,
+        description="B",
+        category="attraction",
+    )
+    day = DayPlan(
+        date=request.start_date,
+        day_index=0,
+        description="test",
+        transportation=request.transportation,
+        accommodation="",
+        attractions=[first, second],
+        timeline=[
+            ScheduleItem(
+                time="10:00",
+                end_time="11:00",
+                activity="Visit A",
+                location="A",
+                item_type="attraction",
+            ),
+            ScheduleItem(
+                time="11:00",
+                end_time="11:20",
+                activity="Transit",
+                location="",
+                item_type="transit",
+            ),
+            ScheduleItem(
+                time="11:50",
+                end_time="12:50",
+                activity="Visit B",
+                location="B",
+                item_type="attraction",
+            ),
+        ],
+    )
+
+    enriched = asyncio.run(planner._enrich_route_transits(request, [day]))[0]
+    transit = next(item for item in enriched.timeline if item.item_type == "transit")
+
+    assert transit.end_time == "11:40"
+    assert "40" in transit.notes
+    assert "9.0" in transit.notes
+
+
+def test_planner_react_loop_drives_route_action_from_observation() -> None:
+    import asyncio
+
+    context_bus = PlanningContextBus()
+    planner = PlannerAgent(amap_tools=FakeRouteTools(), context_bus=context_bus)
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-07",
+        transportation="public transit + walking",
+    )
+    first = Attraction(
+        name="A",
+        address="A",
+        location=Location(longitude=106.0, latitude=29.0),
+        visit_duration=60,
+        description="A",
+        category="attraction",
+    )
+    second = Attraction(
+        name="B",
+        address="B",
+        location=Location(longitude=106.08, latitude=29.04),
+        visit_duration=60,
+        description="B",
+        category="attraction",
+    )
+    day = DayPlan(
+        date=request.start_date,
+        day_index=0,
+        description="test",
+        transportation=request.transportation,
+        accommodation="",
+        attractions=[first, second],
+        meals=[
+            Meal(type="lunch", name="Lunch", estimated_cost=50),
+            Meal(type="dinner", name="Dinner", estimated_cost=80),
+        ],
+        timeline=[
+            ScheduleItem(
+                time="10:00",
+                end_time="11:00",
+                activity="Visit A",
+                location="A",
+                item_type="attraction",
+            ),
+            ScheduleItem(
+                time="11:00",
+                end_time="11:20",
+                activity="Transit",
+                location="",
+                notes="rule estimate",
+                item_type="transit",
+            ),
+            ScheduleItem(
+                time="11:50",
+                end_time="12:50",
+                activity="Visit B",
+                location="B",
+                item_type="attraction",
+            ),
+        ],
+    )
+
+    days, notes = asyncio.run(planner._run_react_planning_loop(request, [day]))
+    transit = next(item for item in days[0].timeline if item.item_type == "transit")
+    snapshot = context_bus.snapshot()
+
+    assert notes == []
+    assert transit.end_time == "11:40"
+    assert "40" in transit.notes
+    assert any(
+        step["kind"] == "observation"
+        and any(issue["code"] == "missing_route_estimate" for issue in step["data"]["issues"])
+        for step in snapshot["steps"]
+    )
+    assert any(
+        step["kind"] == "thought" and step["data"].get("action") == "enrich_routes"
+        for step in snapshot["steps"]
+    )
 
 
 class FakeSplitLLM:

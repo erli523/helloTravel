@@ -262,6 +262,71 @@ class AmapMCPToolset:
             }
             return await self._get_amap_json(endpoint, params)
 
+        if tool_name in {
+            "amap_maps_direction_walking",
+            "amap_maps_direction_driving",
+            "amap_maps_direction_transit_integrated",
+        }:
+            route = await self._call_amap_route_rest(tool_name, arguments)
+            if route is not None:
+                return route
+
+        return None
+
+    async def _call_amap_route_rest(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        origin = self._format_coord(arguments.get("origin"))
+        destination = self._format_coord(arguments.get("destination"))
+        if not origin or not destination:
+            return None
+
+        if tool_name == "amap_maps_direction_walking":
+            endpoint = "https://restapi.amap.com/v3/direction/walking"
+            params = {
+                "key": self.settings.amap_api_key,
+                "origin": origin,
+                "destination": destination,
+            }
+            return await self._get_amap_json(endpoint, params)
+
+        if tool_name == "amap_maps_direction_driving":
+            endpoint = "https://restapi.amap.com/v3/direction/driving"
+            params = {
+                "key": self.settings.amap_api_key,
+                "origin": origin,
+                "destination": destination,
+                "strategy": 10,
+                "extensions": "base",
+            }
+            return await self._get_amap_json(endpoint, params)
+
+        endpoint = "https://restapi.amap.com/v3/direction/transit/integrated"
+        params = {
+            "key": self.settings.amap_api_key,
+            "origin": origin,
+            "destination": destination,
+            "city": arguments.get("city") or arguments.get("city1") or "",
+            "cityd": arguments.get("cityd") or arguments.get("city2") or arguments.get("city") or "",
+            "strategy": 0,
+            "nightflag": 0,
+            "extensions": "base",
+        }
+        return await self._get_amap_json(endpoint, params)
+
+    @staticmethod
+    def _format_coord(value: Any) -> str | None:
+        if isinstance(value, str) and "," in value:
+            return value.strip()
+        if isinstance(value, dict):
+            longitude = value.get("longitude") or value.get("lng")
+            latitude = value.get("latitude") or value.get("lat")
+            if longitude is not None and latitude is not None:
+                return f"{longitude},{latitude}"
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return f"{value[0]},{value[1]}"
         return None
 
     def _expand_rest_keywords(self, keyword: str) -> list[str]:

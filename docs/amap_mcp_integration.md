@@ -48,9 +48,13 @@ server and creates independent tools such as `amap_maps_text_search` and
 - `AttractionSearchAgent`
 - `WeatherQueryAgent`
 - `HotelAgent`
+- `FoodRecommendationAgent`
+- `PlannerAgent`
 
-`PlannerAgent` does not need external tools. It only integrates the outputs
-from the specialist Agents.
+`PlannerAgent` also receives the shared toolset so it can enrich timeline
+transit blocks with Amap walking, driving, or integrated transit route
+estimates. If MCP is unavailable or slow, the same boundary can fall back to
+Amap REST for supported tools.
 
 Source files:
 
@@ -70,10 +74,12 @@ AMAP_MCP_ENABLED=true
 AMAP_MCP_NAME=amap
 AMAP_MCP_RUNNER=npx
 AMAP_MCP_PACKAGE=@sugarforever/amap-mcp-server
+AMAP_REST_PREFERRED=false
 ```
 
-The default is `AMAP_MCP_ENABLED=false`, so local development can run with mock
-data even when the Amap key or Node MCP runtime is unavailable.
+The project default keeps MCP enabled and prefers MCP tool calls. For local
+unit tests or offline development, set `AMAP_MCP_ENABLED=false` to use fallback
+data without starting the MCP runtime.
 
 ## Tool Call Flow
 

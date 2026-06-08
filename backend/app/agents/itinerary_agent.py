@@ -67,12 +67,48 @@ class PlannerAgent(BaseAgent):
         # 2. Geo-clustering fallback
         if not days:
             days = self._build_days_geo(request, attractions, hotels, meals)
+        if self.context_bus is not None:
+            self.context_bus.decide(
+                agent_name=self.name,
+                decision_type="planning_method",
+                summary="Selected LLM split planning when usable, otherwise geographic clustering fallback.",
+                inputs={
+                    "attractions": len(attractions),
+                    "hotels": len(hotels),
+                    "meals": len(meals),
+                    "days": request.days_count,
+                },
+                outputs={"used_llm": used_llm, "days": len(days)},
+            )
 
-        # 3. Budget + constraint check
+        # 3. ReAct planning loop: observe issues, choose actions, then mutate the plan
+        days, quality_notes = await self._run_react_planning_loop(request, days)
+
+        # 4. Budget + constraint check
         budget = self._calculate_budget(request, days)
         budget_note = self._check_budget(request, budget)
         if budget_note:
             overall_suggestions += f"\n{budget_note}"
+        if quality_notes:
+            overall_suggestions += "\n行程质量检查：" + "；".join(quality_notes[:5])
+        if self.context_bus is not None:
+            self.context_bus.result(
+                self.name,
+                "Final itinerary assembled.",
+                total_budget=budget.total,
+                days=len(days),
+                hotel_nights=budget.hotel_nights,
+            )
+            self.context_bus.put_artifact(
+                "budget",
+                {
+                    "total": budget.total,
+                    "attractions": budget.total_attractions,
+                    "hotels": budget.total_hotels,
+                    "meals": budget.total_meals,
+                    "transportation": budget.total_transportation,
+                },
+            )
 
         plan = TripPlan(
             city=request.city,
@@ -100,6 +136,7 @@ class PlannerAgent(BaseAgent):
                 summary=summary,
                 reasoning_summary=reasoning_summary,
                 agent_response=overall_suggestions[:300],
+                context=self.context_summary(),
             ),
         )
 
@@ -987,6 +1024,501 @@ Rules:
 
         return self._fill_schedule_gaps(schedule)
 
+    async def _run_react_planning_loop(
+        self,
+        request: TravelPlanRequest,
+        days: list[DayPlan],
+    ) -> tuple[list[DayPlan], list[str]]:
+        """
+        ReAct control loop for final itinerary feasibility.
+
+        The loop observes the current draft, chooses the next repair action, executes
+        it, then observes again. This makes ReAct the behavior driver instead of a
+        passive trace recorder.
+        """
+
+        notes: list[str] = []
+        executed_actions: set[str] = set()
+        max_iterations = 4
+
+        for iteration in range(max_iterations):
+            issues = self._observe_plan_quality(request, days)
+            if self.context_bus is not None:
+                self.context_bus.observe(
+                    self.name,
+                    "Observed itinerary draft quality.",
+                    iteration=iteration,
+                    issues=issues,
+                )
+
+            action = self._choose_react_action(issues, executed_actions)
+            if action is None:
+                break
+
+            if self.context_bus is not None:
+                self.context_bus.think(
+                    self.name,
+                    "Selected next itinerary repair action from observations.",
+                    iteration=iteration,
+                    action=action,
+                )
+
+            executed_actions.add(action)
+            if action == "enrich_routes":
+                days = await self._enrich_route_transits(request, days)
+                if self.context_bus is not None:
+                    self.context_bus.result(
+                        self.name,
+                        "Route action updated transit blocks with Amap estimates.",
+                        iteration=iteration,
+                    )
+                continue
+
+            if action == "repair_timeline":
+                days, repair_notes = self._repair_and_validate_days(request, days)
+                notes.extend(repair_notes)
+                if self.context_bus is not None:
+                    self.context_bus.repair(
+                        self.name,
+                        "Timeline action repaired overlaps, invalid slots, and idle gaps.",
+                        iteration=iteration,
+                        quality_notes=repair_notes,
+                    )
+                continue
+
+            if action == "rebalance_day_load":
+                days, rebalance_notes = self._rebalance_overloaded_days(request, days)
+                notes.extend(rebalance_notes)
+                if self.context_bus is not None:
+                    self.context_bus.repair(
+                        self.name,
+                        "Load action moved excessive public-transit attractions to lighter days.",
+                        iteration=iteration,
+                        quality_notes=rebalance_notes,
+                    )
+                continue
+
+        days, final_notes = self._repair_and_validate_days(request, days)
+        notes.extend(final_notes)
+        final_issues = self._observe_plan_quality(request, days)
+        if self.context_bus is not None:
+            self.context_bus.result(
+                self.name,
+                "ReAct loop finalized itinerary quality state.",
+                executed_actions=list(executed_actions),
+                remaining_issues=final_issues,
+            )
+        notes.extend(
+            self._quality_notes_from_issues(
+                issue for issue in final_issues if issue.get("severity") != "info"
+            )
+        )
+        return days, list(dict.fromkeys(notes))
+
+    def _observe_plan_quality(
+        self,
+        request: TravelPlanRequest,
+        days: list[DayPlan],
+    ) -> list[dict[str, Any]]:
+        issues: list[dict[str, Any]] = []
+        for day in days:
+            timeline = self._normalize_schedule(day.timeline)
+            if len(timeline) != len(day.timeline):
+                issues.append(
+                    {
+                        "code": "invalid_timeline",
+                        "severity": "high",
+                        "day_index": day.day_index,
+                        "action": "repair_timeline",
+                    }
+                )
+
+            for first, second in zip(timeline, timeline[1:]):
+                first_end = self._parse_time_minutes(first.end_time)
+                second_start = self._parse_time_minutes(second.time)
+                if first_end is not None and second_start is not None:
+                    gap = second_start - first_end
+                    if gap < 0:
+                        issues.append(
+                            {
+                                "code": "timeline_overlap",
+                                "severity": "high",
+                                "day_index": day.day_index,
+                                "action": "repair_timeline",
+                            }
+                        )
+                    elif gap >= 120:
+                        issues.append(
+                            {
+                                "code": "long_idle_gap",
+                                "severity": "medium",
+                                "day_index": day.day_index,
+                                "minutes": gap,
+                                "action": "repair_timeline",
+                            }
+                        )
+
+            if self.amap_tools is not None and self._day_has_unestimated_transit(day):
+                issues.append(
+                    {
+                        "code": "missing_route_estimate",
+                        "severity": "medium",
+                        "day_index": day.day_index,
+                        "action": "enrich_routes",
+                    }
+                )
+
+            if (
+                request.transportation == "public transit + walking"
+                and len(day.attractions) > 3
+            ):
+                issues.append(
+                    {
+                        "code": "overloaded_public_transit_day",
+                        "severity": "medium",
+                        "day_index": day.day_index,
+                        "count": len(day.attractions),
+                        "action": "rebalance_day_load",
+                    }
+                )
+
+            max_leg = self._max_day_leg_km(day.attractions)
+            if max_leg > 18 and request.transportation == "public transit + walking":
+                issues.append(
+                    {
+                        "code": "cross_district_leg",
+                        "severity": "medium",
+                        "day_index": day.day_index,
+                        "distance_km": round(max_leg, 1),
+                        "action": "rebalance_day_load",
+                    }
+                )
+
+            meal_types = {meal.type for meal in day.meals}
+            if "lunch" not in meal_types:
+                issues.append(
+                    {
+                        "code": "missing_lunch",
+                        "severity": "info",
+                        "day_index": day.day_index,
+                        "action": "note",
+                    }
+                )
+            if "dinner" not in meal_types:
+                issues.append(
+                    {
+                        "code": "missing_dinner",
+                        "severity": "info",
+                        "day_index": day.day_index,
+                        "action": "note",
+                    }
+                )
+
+        return issues
+
+    @staticmethod
+    def _choose_react_action(
+        issues: list[dict[str, Any]],
+        executed_actions: set[str],
+    ) -> str | None:
+        priority = ["enrich_routes", "repair_timeline", "rebalance_day_load"]
+        observed_actions = {str(issue.get("action")) for issue in issues}
+        for action in priority:
+            if action in observed_actions and action not in executed_actions:
+                return action
+        return None
+
+    def _day_has_unestimated_transit(self, day: DayPlan) -> bool:
+        if len(day.attractions) < 2:
+            return False
+        by_name = {att.name: att for att in day.attractions}
+        for index, item in enumerate(day.timeline):
+            if item.item_type != "transit":
+                continue
+            if "高德" in item.notes or "Amap" in item.notes:
+                continue
+            previous_attraction = self._nearest_timeline_attraction(
+                day.timeline,
+                by_name,
+                start=index - 1,
+                step=-1,
+            )
+            next_attraction = self._nearest_timeline_attraction(
+                day.timeline,
+                by_name,
+                start=index + 1,
+                step=1,
+            )
+            if previous_attraction is not None and next_attraction is not None:
+                return True
+        return False
+
+    def _rebalance_overloaded_days(
+        self,
+        request: TravelPlanRequest,
+        days: list[DayPlan],
+    ) -> tuple[list[DayPlan], list[str]]:
+        if request.transportation != "public transit + walking" or len(days) < 2:
+            return days, []
+
+        notes: list[str] = []
+        mutable_days = list(days)
+        for index, day in enumerate(list(mutable_days)):
+            if len(day.attractions) <= 3:
+                continue
+            receiver_index = self._find_lighter_day_index(mutable_days, exclude=index)
+            if receiver_index is None:
+                continue
+            moved = day.attractions[-1]
+            source_attractions = day.attractions[:-1]
+            receiver = mutable_days[receiver_index]
+            receiver_attractions = receiver.attractions + [moved]
+
+            mutable_days[index] = day.model_copy(
+                update={
+                    "attractions": source_attractions,
+                    "timeline": self._fill_schedule_gaps(
+                        self._build_default_schedule(request, source_attractions, day.meals)
+                    ),
+                }
+            )
+            mutable_days[receiver_index] = receiver.model_copy(
+                update={
+                    "attractions": receiver_attractions,
+                    "timeline": self._fill_schedule_gaps(
+                        self._build_default_schedule(
+                            request,
+                            receiver_attractions,
+                            receiver.meals,
+                        )
+                    ),
+                }
+            )
+            notes.append(
+                f"Moved {moved.name} from day {day.day_index + 1} to day "
+                f"{receiver.day_index + 1} to reduce public-transit load"
+            )
+
+        return mutable_days, notes
+
+    @staticmethod
+    def _find_lighter_day_index(days: list[DayPlan], *, exclude: int) -> int | None:
+        candidates = [
+            (index, len(day.attractions))
+            for index, day in enumerate(days)
+            if index != exclude and len(day.attractions) < 3
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: item[1])[0]
+
+    @staticmethod
+    def _quality_notes_from_issues(issues: Any) -> list[str]:
+        notes: list[str] = []
+        for issue in issues:
+            day = int(issue.get("day_index", 0)) + 1
+            code = issue.get("code")
+            if code == "cross_district_leg":
+                notes.append(f"Day {day} still has a long cross-district transfer.")
+            elif code == "overloaded_public_transit_day":
+                notes.append(f"Day {day} remains dense for public transit.")
+            elif code == "missing_route_estimate":
+                notes.append(f"Day {day} has a transit segment without live route estimate.")
+            elif code == "timeline_overlap":
+                notes.append(f"Day {day} still has a timeline overlap.")
+        return notes
+
+    async def _enrich_route_transits(
+        self,
+        request: TravelPlanRequest,
+        days: list[DayPlan],
+    ) -> list[DayPlan]:
+        """Use Amap route tools to correct transit notes when coordinates are known."""
+
+        if self.amap_tools is None:
+            return days
+
+        enriched_days: list[DayPlan] = []
+        for day in days:
+            timeline = await self._enrich_day_transits(request, day)
+            enriched_days.append(day.model_copy(update={"timeline": timeline}))
+        return enriched_days
+
+    async def _enrich_day_transits(
+        self,
+        request: TravelPlanRequest,
+        day: DayPlan,
+    ) -> list[ScheduleItem]:
+        if not day.timeline or len(day.attractions) < 2:
+            return day.timeline
+
+        by_name = {att.name: att for att in day.attractions}
+        updated: list[ScheduleItem] = []
+        for index, item in enumerate(day.timeline):
+            if item.item_type != "transit":
+                updated.append(item)
+                continue
+
+            previous_attraction = self._nearest_timeline_attraction(
+                day.timeline,
+                by_name,
+                start=index - 1,
+                step=-1,
+            )
+            next_attraction = self._nearest_timeline_attraction(
+                day.timeline,
+                by_name,
+                start=index + 1,
+                step=1,
+            )
+            if previous_attraction is None or next_attraction is None:
+                updated.append(item)
+                continue
+
+            estimate = await self._route_estimate(
+                request,
+                previous_attraction,
+                next_attraction,
+            )
+            if estimate is None:
+                updated.append(item)
+                continue
+
+            duration_min, distance_km, mode_note = estimate
+            if self.context_bus is not None:
+                self.context_bus.act(
+                    self.name,
+                    "Queried route estimate for adjacent itinerary stops.",
+                    origin=previous_attraction.name,
+                    destination=next_attraction.name,
+                    duration_min=duration_min,
+                    distance_km=round(distance_km, 2),
+                )
+            start = self._parse_time_minutes(item.time)
+            next_start = self._parse_time_minutes(
+                day.timeline[index + 1].time if index + 1 < len(day.timeline) else ""
+            )
+            if start is None:
+                updated.append(item)
+                continue
+
+            end = start + max(5, duration_min)
+            if next_start is not None:
+                end = min(end, next_start)
+            updated.append(
+                item.model_copy(
+                    update={
+                        "end_time": self._fmt_time(end),
+                        "activity": f"前往{next_attraction.name}",
+                        "location": f"{previous_attraction.name} -> {next_attraction.name}",
+                        "notes": (
+                            f"{mode_note}，高德路线估算约 {duration_min} 分钟，"
+                            f"距离约 {distance_km:.1f} 公里。"
+                        ),
+                    }
+                )
+            )
+
+        return self._fill_schedule_gaps(updated)
+
+    @staticmethod
+    def _nearest_timeline_attraction(
+        timeline: list[ScheduleItem],
+        attractions_by_name: dict[str, Attraction],
+        *,
+        start: int,
+        step: int,
+    ) -> Attraction | None:
+        index = start
+        while 0 <= index < len(timeline):
+            item = timeline[index]
+            if item.item_type == "attraction":
+                attraction = attractions_by_name.get(item.location)
+                if attraction is not None:
+                    return attraction
+            index += step
+        return None
+
+    async def _route_estimate(
+        self,
+        request: TravelPlanRequest,
+        origin: Attraction,
+        destination: Attraction,
+    ) -> tuple[int, float, str] | None:
+        if self.amap_tools is None:
+            return None
+
+        distance_km = self._geo_distance_km(
+            origin.location.longitude,
+            origin.location.latitude,
+            destination.location.longitude,
+            destination.location.latitude,
+        )
+        if request.transportation == "public transit + walking":
+            tool_name = (
+                "amap_maps_direction_walking"
+                if distance_km <= 1.5
+                else "amap_maps_direction_transit_integrated"
+            )
+        else:
+            tool_name = "amap_maps_direction_driving"
+
+        result = await self.amap_tools.call_tool(
+            tool_name,
+            {
+                "origin": self._coord(origin.location),
+                "destination": self._coord(destination.location),
+                "city": request.city,
+            },
+        )
+        estimate = self._parse_route_result(result.get("result"), fallback_distance_km=distance_km)
+        if estimate is None:
+            return None
+
+        duration_min, route_distance_km = estimate
+        if tool_name == "amap_maps_direction_walking":
+            mode_note = "步行衔接"
+        elif tool_name == "amap_maps_direction_driving":
+            mode_note = "驾车/打车衔接"
+        else:
+            mode_note = "公交/地铁衔接"
+        return duration_min, route_distance_km, mode_note
+
+    @staticmethod
+    def _coord(location: Any) -> str:
+        return f"{location.longitude},{location.latitude}"
+
+    def _parse_route_result(
+        self,
+        payload: Any,
+        *,
+        fallback_distance_km: float,
+    ) -> tuple[int, float] | None:
+        if not isinstance(payload, dict):
+            return None
+        route = payload.get("route")
+        if not isinstance(route, dict):
+            return None
+
+        candidates = route.get("paths") or route.get("transits") or []
+        if not isinstance(candidates, list) or not candidates:
+            return None
+        first = candidates[0] if isinstance(candidates[0], dict) else {}
+        duration = self._safe_float(first.get("duration"))
+        distance = self._safe_float(first.get("distance"))
+        if duration is None or duration <= 0:
+            return None
+        if distance is None or distance <= 0:
+            distance = fallback_distance_km * 1000
+        return max(5, round(duration / 60)), max(0.1, distance / 1000)
+
+    @staticmethod
+    def _safe_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     @staticmethod
     def _parse_time_minutes(value: str) -> int | None:
         try:
@@ -1054,6 +1586,94 @@ Rules:
         return self._normalize_schedule(filled)
 
     # ── Budget ────────────────────────────────────────────────────────────
+
+    def _repair_and_validate_days(
+        self,
+        request: TravelPlanRequest,
+        days: list[DayPlan],
+    ) -> tuple[list[DayPlan], list[str]]:
+        """Final deterministic quality gate before returning the itinerary."""
+
+        repaired_days: list[DayPlan] = []
+        notes: list[str] = []
+        for day in days:
+            timeline, day_notes = self._repair_timeline(day.timeline)
+            if day_notes:
+                notes.append(f"第 {day.day_index + 1} 天已修正时间轴问题")
+
+            if len(day.attractions) > 3 and request.transportation == "public transit + walking":
+                notes.append(f"第 {day.day_index + 1} 天公共交通景点偏多，建议现场保留弹性")
+
+            meal_types = {meal.type for meal in day.meals}
+            if "lunch" not in meal_types:
+                notes.append(f"第 {day.day_index + 1} 天缺少明确午餐安排")
+            if "dinner" not in meal_types:
+                notes.append(f"第 {day.day_index + 1} 天缺少明确晚餐安排")
+
+            max_leg = self._max_day_leg_km(day.attractions)
+            if max_leg > 18 and request.transportation == "public transit + walking":
+                notes.append(f"第 {day.day_index + 1} 天存在 {max_leg:.0f} 公里以上跨区移动")
+
+            repaired_days.append(day.model_copy(update={"timeline": timeline}))
+
+        return repaired_days, list(dict.fromkeys(notes))
+
+    def _repair_timeline(
+        self,
+        timeline: list[ScheduleItem],
+    ) -> tuple[list[ScheduleItem], list[str]]:
+        normalized = self._normalize_schedule(timeline)
+        if not normalized:
+            return [], ["empty timeline"]
+
+        repaired: list[ScheduleItem] = []
+        notes: list[str] = []
+        cursor = 8 * 60 + 30
+        for item in normalized:
+            start = self._parse_time_minutes(item.time)
+            end = self._parse_time_minutes(item.end_time)
+            if start is None or end is None:
+                notes.append("invalid time")
+                continue
+
+            duration = end - start
+            if start < cursor:
+                if item.item_type in {"transit", "rest", "free"} and end <= cursor + 5:
+                    notes.append("dropped overlap")
+                    continue
+                start = cursor
+                end = min(start + duration, 20 * 60)
+                if end <= start:
+                    notes.append("dropped overlap")
+                    continue
+                item = item.model_copy(
+                    update={
+                        "time": self._fmt_time(start),
+                        "end_time": self._fmt_time(end),
+                    }
+                )
+                notes.append("shifted overlap")
+
+            repaired.append(item)
+            cursor = self._parse_time_minutes(item.end_time) or end
+
+        return self._fill_schedule_gaps(repaired), notes
+
+    def _max_day_leg_km(self, attractions: list[Attraction]) -> float:
+        if len(attractions) < 2:
+            return 0.0
+        max_leg = 0.0
+        for first, second in zip(attractions, attractions[1:]):
+            max_leg = max(
+                max_leg,
+                self._geo_distance_km(
+                    first.location.longitude,
+                    first.location.latitude,
+                    second.location.longitude,
+                    second.location.latitude,
+                ),
+            )
+        return max_leg
 
     def _calculate_budget(
         self, request: TravelPlanRequest, days: list[DayPlan]

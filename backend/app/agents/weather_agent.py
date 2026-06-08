@@ -30,6 +30,14 @@ class WeatherQueryAgent(BaseAgent):
         is_real = bool(weather_info)
         if not weather_info:
             weather_info = self._mock_weather(request)
+        if self.context_bus is not None:
+            self.context_bus.decide(
+                agent_name=self.name,
+                decision_type="weather_source",
+                summary="Selected parsed Amap weather when available, otherwise generated date-aligned fallback weather.",
+                inputs={"city": request.city, "days": request.days_count},
+                outputs={"days": len(weather_info), "real_source": is_real},
+            )
 
         prompt = self.render_prompt(city=request.city)
         query = f"查询 {request.city} 旅行期间天气预报。"
@@ -64,6 +72,7 @@ class WeatherQueryAgent(BaseAgent):
                 summary=summary,
                 reasoning_summary=reasoning_summary,
                 agent_response=agent_response,
+                context=self.context_summary(),
             ),
         )
 

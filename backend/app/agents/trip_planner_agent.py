@@ -4,6 +4,7 @@ import asyncio
 
 from app.agents.attraction_agent import AttractionSearchAgent
 from app.agents.base_agent import AgentTrace
+from app.agents.context_bus import PlanningContextBus
 from app.agents.food_agent import FoodRecommendationAgent
 from app.agents.hotel_agent import HotelAgent
 from app.agents.itinerary_agent import PlannerAgent
@@ -35,11 +36,26 @@ class TripPlannerAgent:
             amap_tools=self.amap_tools,
             llm_service=self.llm_service,
         )
-        self.planner_agent = PlannerAgent(llm_service=self.llm_service)
+        self.planner_agent = PlannerAgent(
+            amap_tools=self.amap_tools,
+            llm_service=self.llm_service,
+        )
         self.last_traces: list[AgentTrace] = []
+        self.last_context: dict = {}
 
     async def plan_trip(self, request: TravelPlanRequest) -> TripPlan:
         """Run the five-step collaboration process."""
+
+        context_bus = PlanningContextBus()
+        self._attach_context_bus(context_bus)
+        context_bus.observe(
+            "TripPlannerAgent",
+            "Received travel planning request.",
+            city=request.city,
+            days=request.days_count,
+            preferences=request.preferences,
+            transportation=request.transportation,
+        )
 
         (
             attraction_result,
@@ -51,6 +67,14 @@ class TripPlannerAgent:
             self.weather_agent.run(request),
             self.hotel_agent.run(request),
             self.food_agent.run(request),
+        )
+        context_bus.result(
+            "TripPlannerAgent",
+            "Specialist agents completed in parallel.",
+            attractions=len(attraction_result.data),
+            weather_days=len(weather_result.data),
+            hotels=len(hotel_result.data),
+            meals=len(food_result.data),
         )
 
         planner_query = self._build_planner_query(
@@ -76,7 +100,18 @@ class TripPlannerAgent:
             food_result.trace,
             planner_result.trace,
         ]
+        self.last_context = context_bus.snapshot()
         return planner_result.data
+
+    def _attach_context_bus(self, context_bus: PlanningContextBus) -> None:
+        for agent in (
+            self.attraction_agent,
+            self.weather_agent,
+            self.hotel_agent,
+            self.food_agent,
+            self.planner_agent,
+        ):
+            agent.set_context_bus(context_bus)
 
     def _build_planner_query(
         self,

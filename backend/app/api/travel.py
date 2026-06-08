@@ -33,12 +33,21 @@ async def get_agent_traces() -> list[AgentTrace]:
     return planner_service.get_last_traces()
 
 
+@router.get("/context")
+async def get_planning_context() -> dict:
+    return planner_service.get_last_context()
+
+
 @router.get("/integrations")
 async def get_integrations() -> dict:
     return {
         "unsplash": planner_service.get_image_service_status(),
         "amap_mcp": planner_service.trip_planner_agent.amap_tools.describe(),
         "llm": planner_service.trip_planner_agent.llm_service.status(),
+        "react_debug": {
+            "enabled": planner_service.settings.react_debug_enabled,
+            "context_endpoint": "/api/travel/context",
+        },
     }
 
 

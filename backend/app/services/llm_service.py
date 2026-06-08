@@ -185,6 +185,133 @@ class LLMService:
             return [item for item in parsed["schedule"] if isinstance(item, dict)]
         return None
 
+    async def select_attraction_keywords(
+        self,
+        *,
+        city: str,
+        preferences: list[str],
+        fallback_keywords: list[str],
+    ) -> list[str] | None:
+        """Ask AttractionSearchAgent for diverse Amap POI search intents."""
+
+        if not self.available:
+            return None
+
+        payload = {
+            "model": self.settings.llm_model_id,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are AttractionSearchAgent. Return only JSON with a "
+                        "keywords array. Generate 5-8 short Amap POI search keywords "
+                        "for the destination city. Treat multiple preferences as OR "
+                        "intent coverage, not as one combined AND query. Prefer city-"
+                        "specific streets, scenic areas, cultural sites, viewpoints, "
+                        "and food districts. Do not include restaurant names."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "city": city,
+                            "preferences": preferences,
+                            "fallback_keywords": fallback_keywords,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0.35,
+            "max_tokens": 420,
+        }
+        content = await self._chat(
+            payload,
+            fallback="",
+            label="AttractionSearchAgent.select_keywords",
+        )
+        if not content:
+            return None
+        parsed = self._parse_json_any_response(content)
+        if isinstance(parsed, dict):
+            keywords = parsed.get("keywords")
+        elif isinstance(parsed, list):
+            keywords = parsed
+        else:
+            keywords = None
+        if not isinstance(keywords, list):
+            return None
+        clean_keywords = [
+            str(keyword).strip()
+            for keyword in keywords
+            if str(keyword).strip()
+        ]
+        return list(dict.fromkeys(clean_keywords))[:8] or None
+
+    async def rank_attraction_candidates(
+        self,
+        *,
+        city: str,
+        preferences: list[str],
+        candidates: list[dict[str, Any]],
+        target_count: int,
+    ) -> list[str] | None:
+        """Ask AttractionSearchAgent to rank real POI candidates by fit and variety."""
+
+        if not self.available or not candidates:
+            return None
+
+        payload = {
+            "model": self.settings.llm_model_id,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are AttractionSearchAgent. Return only JSON with a "
+                        "ranked_names array. Rank the provided real POI candidates "
+                        "for a travel itinerary. Prefer authentic local variety and "
+                        "cover selected preferences as OR intents. Avoid choosing only "
+                        "museums for culture; mix historic streets, landmarks, nature, "
+                        "viewpoints, and food streets when available. Only use names "
+                        "from the provided candidates."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "city": city,
+                            "preferences": preferences,
+                            "target_count": target_count,
+                            "candidates": candidates[:24],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0.25,
+            "max_tokens": 700,
+        }
+        content = await self._chat(
+            payload,
+            fallback="",
+            label="AttractionSearchAgent.rank_candidates",
+        )
+        if not content:
+            return None
+        parsed = self._parse_json_any_response(content)
+        if isinstance(parsed, dict):
+            names = parsed.get("ranked_names") or parsed.get("names")
+        elif isinstance(parsed, list):
+            names = parsed
+        else:
+            names = None
+        if not isinstance(names, list):
+            return None
+        clean_names = [str(name).strip() for name in names if str(name).strip()]
+        return list(dict.fromkeys(clean_names)) or None
+
     # ── Internal helpers ─────────────────────────────────────────────────
 
     async def _chat(

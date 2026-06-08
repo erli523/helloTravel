@@ -181,6 +181,108 @@ def test_attraction_agent_rejects_cross_city_pois() -> None:
     assert not agent._location_matches_city(Location(longitude=121.473701, latitude=31.230416), "重庆")
 
 
+class FakeAttractionLLM:
+    class Settings:
+        agent_response_timeout = 5
+
+    settings = Settings()
+
+    async def select_attraction_keywords(
+        self,
+        *,
+        city: str,
+        preferences: list[str],
+        fallback_keywords: list[str],
+    ) -> list[str]:
+        return ["old town", "river viewpoint", "food street"]
+
+    async def rank_attraction_candidates(
+        self,
+        *,
+        city: str,
+        preferences: list[str],
+        candidates: list[dict],
+        target_count: int,
+    ) -> list[str]:
+        return ["River Park", "Old Street", "Museum"]
+
+
+def test_attraction_agent_uses_llm_keywords_with_rule_fallback() -> None:
+    import asyncio
+
+    agent = AttractionSearchAgent(llm_service=FakeAttractionLLM())
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-08",
+        preferences=["culture", "nature", "food"],
+    )
+    fallback_keywords = ["museum", "park", "street"]
+
+    keywords = asyncio.run(agent._select_keywords_with_llm(request, fallback_keywords))
+
+    assert keywords[:3] == ["old town", "river viewpoint", "food street"]
+    assert "museum" in keywords
+    assert "park" in keywords
+
+
+def test_attraction_agent_uses_llm_candidate_ranking_before_diversity() -> None:
+    import asyncio
+
+    agent = AttractionSearchAgent(llm_service=FakeAttractionLLM())
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-08",
+        preferences=["culture"],
+    )
+    candidates = [
+        Attraction(
+            name="Museum",
+            address="Test",
+            location=Location(longitude=1, latitude=1),
+            visit_duration=90,
+            description="Museum",
+            category="culture",
+            rating=4.5,
+        ),
+        Attraction(
+            name="Old Street",
+            address="Test",
+            location=Location(longitude=1, latitude=1),
+            visit_duration=90,
+            description="Old Street",
+            category="culture",
+            rating=4.5,
+        ),
+        Attraction(
+            name="River Park",
+            address="Test",
+            location=Location(longitude=1, latitude=1),
+            visit_duration=90,
+            description="River Park",
+            category="culture",
+            rating=4.5,
+        ),
+    ]
+
+    ranked = asyncio.run(
+        agent._rank_attractions_with_llm(
+            request=request,
+            attractions=candidates,
+            target_count=3,
+        )
+    )
+    selected = agent._diversify_attractions(
+        attractions=ranked,
+        preferences=["culture"],
+        target_count=3,
+    )
+
+    assert [item.name for item in ranked[:3]] == ["River Park", "Old Street", "Museum"]
+    assert [item.name for item in selected[:3]] == ["River Park", "Old Street", "Museum"]
+
+
 def test_food_agent_assigns_meal_types_semantically() -> None:
     agent = FoodRecommendationAgent()
 

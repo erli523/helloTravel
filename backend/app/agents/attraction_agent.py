@@ -190,7 +190,8 @@ class AttractionSearchAgent(BaseAgent):
 
     async def run(self, request: TravelPlanRequest) -> AgentResult[list[Attraction]]:
         preferences = request.preferences or ["landmark", "local culture"]
-        keywords = self._select_keywords(preferences)
+        fallback_keywords = self._select_keywords(preferences)
+        keywords = await self._select_keywords_with_llm(request, fallback_keywords)
         tool_calls = [
             f"[TOOL_CALL:amap_maps_text_search:keywords={keyword},city={request.city}]"
             for keyword in keywords
@@ -228,6 +229,11 @@ class AttractionSearchAgent(BaseAgent):
         if not attractions:
             attractions = self._mock_attractions(request, keywords)
         attractions.extend(self._supplement_attractions_for_preferences(request, attractions))
+        attractions = await self._rank_attractions_with_llm(
+            request=request,
+            attractions=attractions,
+            target_count=target_count,
+        )
         attractions = self._diversify_attractions(
             attractions=attractions,
             preferences=preferences,
@@ -244,8 +250,8 @@ class AttractionSearchAgent(BaseAgent):
             f"{self._source_summary(tool_results, detail_results)}"
         )
         reasoning_summary = (
-            "Selected search keywords from user preferences, called Amap POI search, "
-            "then requested POI details to obtain precise coordinates and photos."
+            "Selected diverse search keywords from user preferences, called Amap POI search, "
+            "requested POI details, then ranked and diversified real candidates for coverage."
         )
         context = "\n".join(
             [
@@ -277,6 +283,102 @@ class AttractionSearchAgent(BaseAgent):
                 agent_response=agent_response,
             ),
         )
+
+    async def _select_keywords_with_llm(
+        self,
+        request: TravelPlanRequest,
+        fallback_keywords: list[str],
+    ) -> list[str]:
+        if self.llm_service is None:
+            return fallback_keywords
+        try:
+            llm_keywords = await asyncio.wait_for(
+                self.llm_service.select_attraction_keywords(
+                    city=request.city,
+                    preferences=request.preferences,
+                    fallback_keywords=fallback_keywords,
+                ),
+                timeout=self.llm_service.settings.agent_response_timeout,
+            )
+        except (AttributeError, asyncio.TimeoutError):
+            return fallback_keywords
+
+        return self._merge_llm_keywords(llm_keywords, fallback_keywords)
+
+    def _merge_llm_keywords(
+        self,
+        llm_keywords: list[str] | None,
+        fallback_keywords: list[str],
+    ) -> list[str]:
+        if not llm_keywords:
+            return fallback_keywords
+
+        merged: list[str] = []
+        for keyword in llm_keywords:
+            clean_keyword = str(keyword).strip()
+            if clean_keyword:
+                merged.append(clean_keyword)
+
+        # Keep rule keywords as safety coverage in case the LLM is too narrow.
+        merged.extend(fallback_keywords)
+        return list(dict.fromkeys(merged))[:8] or fallback_keywords
+
+    async def _rank_attractions_with_llm(
+        self,
+        *,
+        request: TravelPlanRequest,
+        attractions: list[Attraction],
+        target_count: int,
+    ) -> list[Attraction]:
+        if self.llm_service is None or not attractions:
+            return attractions
+
+        candidates = [
+            {
+                "name": item.name,
+                "category": item.category,
+                "address": item.address,
+                "rating": item.rating,
+                "ticket_price": item.ticket_price,
+                "tags": sorted(self._preference_tags(item)),
+            }
+            for item in attractions[:24]
+        ]
+        try:
+            ranked_names = await asyncio.wait_for(
+                self.llm_service.rank_attraction_candidates(
+                    city=request.city,
+                    preferences=request.preferences,
+                    candidates=candidates,
+                    target_count=target_count,
+                ),
+                timeout=self.llm_service.settings.agent_response_timeout,
+            )
+        except (AttributeError, asyncio.TimeoutError):
+            return attractions
+
+        return self._apply_llm_attraction_order(attractions, ranked_names)
+
+    @staticmethod
+    def _apply_llm_attraction_order(
+        attractions: list[Attraction],
+        ranked_names: list[str] | None,
+    ) -> list[Attraction]:
+        if not ranked_names:
+            return attractions
+
+        by_name = {item.name: item for item in attractions}
+        ordered: list[Attraction] = []
+        selected_names: set[str] = set()
+        for name in ranked_names:
+            attraction = by_name.get(str(name).strip())
+            if attraction is None or attraction.name in selected_names:
+                continue
+            ordered.append(attraction)
+            selected_names.add(attraction.name)
+
+        ordered.extend(item for item in attractions if item.name not in selected_names)
+        return ordered or attractions
 
     def _select_keywords(self, preferences: list[str]) -> list[str]:
         """Expand user preferences as OR-style search intents, not one narrow query."""
@@ -412,9 +514,13 @@ class AttractionSearchAgent(BaseAgent):
 
         normalized_preferences = self._normalize_preferences(preferences)
         target_count = max(4, min(target_count, len(attractions)))
+        original_order = {item.name: index for index, item in enumerate(attractions)}
         ranked = sorted(
             attractions,
-            key=lambda item: self._attraction_score(item, normalized_preferences),
+            key=lambda item: (
+                *self._attraction_score(item, normalized_preferences),
+                -original_order.get(item.name, 0),
+            ),
             reverse=True,
         )
 

@@ -4,7 +4,9 @@ backend/.env.*
 !backend/.env.example
 backend/server.log
 backend/server.err.log
-backend/app/**/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.pytest_cache/
 frontend/node_modules/
 frontend/dist/
 frontend/.env

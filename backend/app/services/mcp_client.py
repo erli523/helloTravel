@@ -1,6 +1,8 @@
 """MCP integration boundary for Agent tool calls."""
 
 import asyncio
+import json
+import re
 from unittest.mock import patch
 import os
 from dataclasses import dataclass, field
@@ -44,7 +46,7 @@ class AmapMCPToolset:
     )
 
     def __post_init__(self) -> None:
-        if self.settings.amap_mcp_enabled:
+        if self.settings.amap_mcp_enabled and not self.settings.amap_rest_preferred:
             self._init_mcp_tool()
 
     @property
@@ -59,6 +61,14 @@ class AmapMCPToolset:
 
     def describe(self) -> str:
         command = " ".join(self.settings.amap_mcp_command)
+        if self.settings.amap_rest_preferred and self.settings.amap_mcp_enabled:
+            return (
+                "Amap MCP is configured, but the main planning path uses Amap REST "
+                "for bounded latency. Set AMAP_REST_PREFERRED=false to route tool "
+                f"calls through MCP via `{command}`."
+            )
+        if self.settings.amap_rest_preferred and self.settings.amap_api_key:
+            return "Amap REST preferred for supported tools; MCP is not enabled."
         if self.enabled:
             return f"Amap MCP enabled via `{command}` with {len(self.tool_names)} tools."
         if self.startup_error:
@@ -91,6 +101,17 @@ class AmapMCPToolset:
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call an expanded MCP tool when available, otherwise return mock metadata."""
+
+        if self.settings.amap_mcp_enabled and self.settings.amap_rest_preferred:
+            rest_result = await self._call_amap_rest(tool_name, arguments)
+            if rest_result is not None:
+                return {
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "status": "ok",
+                    "source": "amap_rest",
+                    "result": rest_result,
+                }
 
         if not self.enabled:
             return {
@@ -136,6 +157,13 @@ class AmapMCPToolset:
                 arguments,
                 fallback_status="error",
                 fallback_message=str(result),
+            )
+        if tool_name == "amap_maps_text_search" and not self._result_has_pois(result):
+            return await self._rest_fallback(
+                tool_name,
+                arguments,
+                fallback_status="empty",
+                fallback_message="MCP text search returned no POI candidates.",
             )
         return {
             "tool_name": tool_name,
@@ -273,6 +301,24 @@ class AmapMCPToolset:
         if not isinstance(result, str):
             return False
         return "codec can't encode" in result or "UnicodeEncodeError" in result
+
+    def _result_has_pois(self, result: Any) -> bool:
+        payload: dict[str, Any] | None = None
+        if isinstance(result, dict):
+            payload = result
+        elif isinstance(result, str):
+            match = re.search(r"\{.*\}", result, flags=re.S)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    payload = parsed
+        if payload is None:
+            return True
+        pois = payload.get("pois")
+        return isinstance(pois, list) and len(pois) > 0
 
     def _mcp_env(self) -> dict[str, str]:
         return {

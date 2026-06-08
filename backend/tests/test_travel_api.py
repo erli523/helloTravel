@@ -124,6 +124,62 @@ def test_real_chinese_poi_types_are_kept_as_attractions() -> None:
     )
 
 
+def test_multi_preferences_expand_to_diverse_or_keywords() -> None:
+    agent = AttractionSearchAgent()
+
+    keywords = agent._select_keywords(["culture", "nature", "food"])
+
+    assert "历史文化" in keywords
+    assert "风景名胜" in keywords
+    assert any(item in keywords for item in ("老街", "美食街", "夜市", "步行街"))
+    assert keywords.index("历史文化") < keywords.index("风景名胜")
+    assert len(keywords) >= 6
+
+
+def test_attraction_diversity_avoids_all_museums_for_mixed_preferences() -> None:
+    agent = AttractionSearchAgent()
+
+    def make_attraction(name: str, category: str, rating: float = 4.5) -> Attraction:
+        return Attraction(
+            name=name,
+            address="测试城市",
+            location=Location(longitude=106.0, latitude=29.0),
+            visit_duration=120,
+            description=category,
+            category=category,
+            rating=rating,
+        )
+
+    candidates = [
+        make_attraction("城市博物馆", "科教文化服务;博物馆", 4.9),
+        make_attraction("历史博物馆", "科教文化服务;博物馆", 4.8),
+        make_attraction("自然博物馆", "科教文化服务;博物馆", 4.7),
+        make_attraction("滨江公园", "风景名胜;公园广场", 4.4),
+        make_attraction("古城老街", "风景名胜;特色街区", 4.3),
+        make_attraction("山水观景台", "风景名胜;观景点", 4.2),
+    ]
+
+    selected = agent._diversify_attractions(
+        attractions=candidates,
+        preferences=["culture", "nature", "food"],
+        target_count=5,
+    )
+    names = [item.name for item in selected]
+    families = [agent._category_family(item) for item in selected]
+
+    assert "城市博物馆" in names
+    assert "滨江公园" in names or "山水观景台" in names
+    assert "古城老街" in names
+    assert families.count("museum") <= 2
+
+
+def test_attraction_agent_rejects_cross_city_pois() -> None:
+    agent = AttractionSearchAgent()
+
+    assert agent._location_matches_city(Location(longitude=106.551556, latitude=29.563009), "重庆")
+    assert not agent._location_matches_city(Location(longitude=121.473701, latitude=31.230416), "重庆")
+
+
 def _minutes(value: str) -> int:
     hour, minute = value.split(":", 1)
     return int(hour) * 60 + int(minute)

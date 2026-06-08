@@ -27,6 +27,7 @@ class Settings(BaseSettings):
         alias="AMAP_MCP_PACKAGE",
     )
     amap_mcp_tool_timeout: float = Field(default=15.0, alias="AMAP_MCP_TOOL_TIMEOUT")
+    amap_rest_preferred: bool = Field(default=True, alias="AMAP_REST_PREFERRED")
 
     unsplash_api_key: str = Field(default="", alias="UNSPLASH_ACCESS_KEY")
     unsplash_enabled: bool = Field(default=True, alias="UNSPLASH_ENABLED")
@@ -35,6 +36,7 @@ class Settings(BaseSettings):
     )
     unsplash_timeout: float = Field(default=10.0, alias="UNSPLASH_TIMEOUT")
     unsplash_per_page: int = Field(default=1, alias="UNSPLASH_PER_PAGE")
+    image_enrich_timeout: float = Field(default=12.0, alias="IMAGE_ENRICH_TIMEOUT")
 
     llm_model_id: str = Field(default="deepseek-v4-flash", alias="LLM_MODEL_ID")
     llm_enabled: bool = Field(default=True, alias="LLM_ENABLED")
@@ -42,6 +44,7 @@ class Settings(BaseSettings):
     llm_base_url: str = Field(default="https://api.deepseek.com/v1", alias="LLM_BASE_URL")
     llm_timeout: float = Field(default=60.0, alias="LLM_TIMEOUT")
     agent_response_timeout: float = Field(default=20.0, alias="AGENT_RESPONSE_TIMEOUT")
+    planning_timeout: float = Field(default=150.0, alias="PLANNING_TIMEOUT")
 
     dashscope_api_key: str = Field(default="", alias="DASHSCOPE_API_KEY")
     dashscope_base_url: str = Field(

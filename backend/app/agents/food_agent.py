@@ -84,12 +84,15 @@ class FoodRecommendationAgent(BaseAgent):
         detail_results: list[dict[str, Any]] = []
 
         if self.amap_tools is not None:
-            for keyword in keywords:
-                result = await self.amap_tools.call_tool(
-                    "amap_maps_text_search",
-                    {"keywords": keyword, "city": request.city},
+            tool_results = await asyncio.gather(
+                *(
+                    self.amap_tools.call_tool(
+                        "amap_maps_text_search",
+                        {"keywords": keyword, "city": request.city},
+                    )
+                    for keyword in keywords
                 )
-                tool_results.append(result)
+            )
             detail_results = await self._fetch_detail_results(tool_results)
 
         meals = self._meals_from_details(detail_results)

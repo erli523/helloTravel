@@ -2,84 +2,108 @@
   <main class="home-page">
     <section class="hero-panel">
       <div>
-        <p class="eyebrow">AI travel planning</p>
-        <h1>Smart Travel Assistant</h1>
+        <p class="eyebrow">✈ AI 智能旅行规划</p>
+        <h1>你的专属<br/>旅行助手</h1>
         <p class="subtitle">
-          Build a day-by-day itinerary with attractions, hotels, weather,
-          budget, and images.
+          输入目的地，AI 帮你规划景点、住宿、天气、预算，
+          生成完整的图文行程方案。
         </p>
         <div class="route-visual" aria-hidden="true">
           <span></span>
           <span></span>
           <span></span>
         </div>
+
+        <div class="features">
+          <div class="feat">
+            <span class="feat-icon">🏛</span>
+            <div class="feat-text">
+              <strong>智能景点推荐</strong>
+              <span>结合高德地图真实数据，按偏好筛选最优景点</span>
+            </div>
+          </div>
+          <div class="feat">
+            <span class="feat-icon">🗓️</span>
+            <div class="feat-text">
+              <strong>精准时间规划</strong>
+              <span>为每个景点分配合理时间段，告别行程空白</span>
+            </div>
+          </div>
+          <div class="feat">
+            <span class="feat-icon">💰</span>
+            <div class="feat-text">
+              <strong>全面费用预算</strong>
+              <span>景点、住宿、餐饮、交通一键汇总</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <form class="planner-form" @submit.prevent="handleSubmit">
         <div class="form-heading">
-          <strong>Plan builder</strong>
+          <strong>规划信息</strong>
           <span>{{ formData.start_date }} · {{ formData.end_date }}</span>
         </div>
         <label>
-          <span>Destination city</span>
-          <input v-model.trim="formData.city" required placeholder="Beijing" />
+          <span>目的地城市</span>
+          <input v-model.trim="formData.city" required placeholder="例：北京、大理、成都" />
         </label>
 
         <div class="grid-2">
           <label>
-            <span>Start date</span>
+            <span>出发日期</span>
             <input v-model="formData.start_date" required type="date" />
           </label>
           <label>
-            <span>End date</span>
+            <span>返回日期</span>
             <input v-model="formData.end_date" required type="date" />
           </label>
         </div>
 
         <div class="grid-2">
           <label>
-            <span>Travelers</span>
+            <span>出行人数</span>
             <input v-model.number="formData.travelers" min="1" max="20" type="number" />
           </label>
           <label>
-            <span>Budget level</span>
+            <span>预算档次</span>
             <select v-model="formData.budget_level">
-              <option value="economy">Economy</option>
-              <option value="comfort">Comfort</option>
-              <option value="premium">Premium</option>
+              <option value="economy">经济型</option>
+              <option value="comfort">舒适型</option>
+              <option value="premium">高端型</option>
             </select>
           </label>
         </div>
 
         <div class="grid-2">
           <label>
-            <span>Transportation</span>
+            <span>出行方式</span>
             <select v-model="formData.transportation">
-              <option value="public transit + walking">Public transit + walking</option>
-              <option value="taxi + walking">Taxi + walking</option>
-              <option value="self-driving">Self-driving</option>
+              <option value="public transit + walking">🚇 公共交通 + 步行</option>
+              <option value="taxi + walking">🚖 打车 + 步行</option>
+              <option value="self-driving">🚗 自驾</option>
             </select>
           </label>
           <label>
-            <span>Accommodation</span>
+            <span>住宿偏好</span>
             <select v-model="formData.accommodation">
-              <option value="economy">Economy hotel</option>
-              <option value="comfort">Comfort hotel</option>
-              <option value="premium">Premium hotel</option>
+              <option value="economy">经济酒店</option>
+              <option value="comfort">舒适酒店</option>
+              <option value="premium">高档酒店</option>
             </select>
           </label>
         </div>
 
         <label>
-          <span>Total budget</span>
-          <input v-model.number="formData.budget" min="0" placeholder="Optional" type="number" />
+          <span>总预算（元，可选）</span>
+          <input v-model.number="formData.budget" min="0" placeholder="不填则不限制预算" type="number" />
         </label>
 
         <fieldset>
-          <legend>Preferences</legend>
+          <legend>旅行偏好</legend>
           <label v-for="item in preferenceOptions" :key="item" class="check-item">
             <input v-model="formData.preferences" :value="item" type="checkbox" />
-            <span>{{ item }}</span>
+            <span>{{ prefLabel(item) }}</span>
           </label>
         </fieldset>
 
@@ -93,7 +117,7 @@
         <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
 
         <button :disabled="loading" type="submit">
-          {{ loading ? "Planning..." : "Start planning" }}
+          {{ loading ? "AI 规划中…" : "✦ 开始规划" }}
         </button>
       </form>
     </section>
@@ -116,6 +140,18 @@ end.setDate(today.getDate() + 2);
 const formatDate = (value: Date) => value.toISOString().slice(0, 10);
 const preferenceOptions = ["culture", "nature", "food", "family", "slow travel"];
 
+const prefLabelMap: Record<string, string> = {
+  culture: "🏛 文化历史",
+  nature: "🌿 自然风光",
+  food: "🍜 美食探索",
+  family: "👨‍👩‍👧 亲子出行",
+  "slow travel": "☕ 慢旅行",
+};
+
+function prefLabel(v: string): string {
+  return prefLabelMap[v] ?? v;
+}
+
 const loading = ref(false);
 const loadingProgress = ref(0);
 const loadingStatus = ref("");
@@ -135,7 +171,7 @@ const formData = reactive<TravelPlanRequest>({
 
 async function handleSubmit() {
   if (formData.end_date < formData.start_date) {
-    errorMessage.value = "End date cannot be earlier than start date.";
+    errorMessage.value = "返回日期不能早于出发日期。";
     return;
   }
 
@@ -147,10 +183,10 @@ async function handleSubmit() {
   const progressInterval = window.setInterval(() => {
     if (loadingProgress.value >= 90) return;
     loadingProgress.value += 10;
-    if (loadingProgress.value <= 30) loadingStatus.value = "Searching attractions...";
-    else if (loadingProgress.value <= 50) loadingStatus.value = "Querying weather...";
-    else if (loadingProgress.value <= 70) loadingStatus.value = "Recommending hotels...";
-    else loadingStatus.value = "Generating itinerary...";
+    if (loadingProgress.value <= 30) loadingStatus.value = "🏛 搜索景点候选…";
+    else if (loadingProgress.value <= 50) loadingStatus.value = "🌤 查询天气预报…";
+    else if (loadingProgress.value <= 70) loadingStatus.value = "🏨 筛选酒店方案…";
+    else loadingStatus.value = "🧠 AI 智能生成行程…";
   }, 500);
 
   try {
@@ -160,13 +196,13 @@ async function handleSubmit() {
     });
     window.clearInterval(progressInterval);
     loadingProgress.value = 100;
-    loadingStatus.value = "Done";
+    loadingStatus.value = "✓ 规划完成";
     sessionStorage.setItem("tripPlan", JSON.stringify(tripPlan));
     await router.push({ name: "result" });
   } catch (error) {
     window.clearInterval(progressInterval);
     errorMessage.value =
-      error instanceof Error ? error.message : "Failed to generate trip plan.";
+      error instanceof Error ? error.message : "行程生成失败，请稍后重试。";
   } finally {
     loading.value = false;
   }
@@ -174,106 +210,137 @@ async function handleSubmit() {
 </script>
 
 <style scoped>
+/* ── Page shell ── */
 .home-page {
-  background:
-    linear-gradient(180deg, #eaf4f1 0%, #f8fafc 50%, #f7f3ea 100%);
+  background: linear-gradient(160deg, #e6f7f4 0%, #f8fafc 50%, #fdf8f0 100%);
   color: #0f172a;
   min-height: 100vh;
   overflow-x: hidden;
-  padding: 40px 24px;
+  padding: 48px 24px 60px;
 }
 
 .hero-panel {
   align-items: start;
   display: grid;
-  gap: 36px;
-  grid-template-columns: minmax(280px, 0.82fr) minmax(360px, 1fr);
+  gap: 40px;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(380px, 1fr);
   margin: 0 auto;
   max-width: 1180px;
 }
 
+/* ── Left copy ── */
 .eyebrow {
   color: #0f766e;
   font-size: 13px;
   font-weight: 700;
-  margin: 0 0 8px;
+  letter-spacing: .07em;
+  margin: 0 0 16px;
   text-transform: uppercase;
 }
 
 h1 {
-  font-size: 56px;
+  font-size: 58px;
+  font-weight: 800;
+  letter-spacing: -.03em;
   line-height: 1.05;
-  margin: 0;
-  max-width: 560px;
+  margin: 0 0 20px;
 }
 
 .subtitle {
   color: #475569;
-  font-size: 20px;
-  line-height: 1.45;
-  max-width: 520px;
+  font-size: 18px;
+  line-height: 1.6;
+  max-width: 480px;
+  margin: 0 0 40px;
 }
 
 .route-visual {
-  background:
-    linear-gradient(90deg, #0f766e 0 32%, transparent 32% 38%, #102a43 38% 68%, transparent 68% 74%, #d97706 74% 100%);
-  border-radius: 8px;
+  background: linear-gradient(90deg,
+    #0f766e 0 30%, rgba(15,118,110,.2) 30% 36%,
+    #1d4ed8 36% 65%, rgba(29,78,216,.2) 65% 71%,
+    #d97706 71% 100%);
+  border-radius: 6px;
   display: grid;
   gap: 18px;
   grid-template-columns: repeat(3, 1fr);
-  height: 8px;
-  margin-top: 34px;
-  max-width: 440px;
+  height: 6px;
+  max-width: 400px;
   position: relative;
 }
 
 .route-visual span {
-  background: #ffffff;
+  background: #fff;
   border: 3px solid #0f766e;
   border-radius: 50%;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-  height: 22px;
+  box-shadow: 0 4px 12px rgba(15,23,42,.16);
+  height: 20px;
   justify-self: center;
   margin-top: -7px;
-  width: 22px;
+  width: 20px;
 }
 
-.route-visual span:nth-child(2) {
-  border-color: #102a43;
-}
+.route-visual span:nth-child(2) { border-color: #1d4ed8; }
+.route-visual span:nth-child(3) { border-color: #d97706; }
 
-.route-visual span:nth-child(3) {
-  border-color: #d97706;
-}
-
-.planner-form {
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 8px;
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+/* ── Features list ── */
+.features {
   display: grid;
-  gap: 16px;
+  gap: 12px;
+  margin-top: 36px;
+}
+
+.feat {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+}
+
+.feat-icon {
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  border-radius: 10px;
+  flex-shrink: 0;
+  font-size: 20px;
+  padding: 8px;
+}
+
+.feat-text strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 2px;
+}
+
+.feat-text span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+/* ── Form card ── */
+.planner-form {
+  background: #fff;
+  border: 1px solid rgba(15,23,42,.08);
+  border-radius: 16px;
+  box-shadow:
+    0 4px 24px rgba(15,23,42,.07),
+    0 1px 4px rgba(15,23,42,.04);
+  display: grid;
+  gap: 18px;
   min-width: 0;
-  padding: 24px;
+  padding: 28px;
 }
 
 .form-heading {
   align-items: center;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid #f1f5f9;
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  padding-bottom: 14px;
+  padding-bottom: 16px;
 }
 
-.form-heading strong {
-  font-size: 18px;
-}
-
-.form-heading span {
-  color: #64748b;
-  font-size: 13px;
-}
+.form-heading strong { font-size: 18px; font-weight: 700; }
+.form-heading span   { color: #94a3b8; font-size: 13px; }
 
 .grid-2 {
   display: grid;
@@ -281,32 +348,32 @@ h1 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-label {
-  display: grid;
-  gap: 7px;
-}
+label { display: grid; gap: 6px; }
 
-label span,
+label > span,
 legend {
   color: #334155;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
 }
 
 input,
 select {
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
   font: inherit;
   min-height: 42px;
   padding: 0 12px;
+  transition: border-color .18s, box-shadow .18s;
   width: 100%;
 }
 
 input:focus,
 select:focus {
+  background: #fff;
   border-color: #0f766e;
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+  box-shadow: 0 0 0 3px rgba(15,118,110,.12);
   outline: none;
 }
 
@@ -319,102 +386,87 @@ fieldset {
   padding: 0;
 }
 
-legend {
-  flex: 0 0 100%;
-  margin-bottom: 4px;
-}
+legend { flex: 0 0 100%; margin-bottom: 4px; }
 
 .check-item {
   align-items: center;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  cursor: pointer;
   display: inline-flex;
+  font-size: 13px;
   gap: 6px;
-  min-height: 36px;
-  padding: 0 10px;
-  transition:
-    background 0.18s ease,
-    border-color 0.18s ease;
+  min-height: 34px;
+  padding: 0 12px;
+  transition: background .18s, border-color .18s, color .18s;
 }
 
-.check-item input {
-  min-height: auto;
-  width: auto;
-}
+.check-item input { min-height: auto; width: auto; }
 
 .check-item:has(input:checked) {
-  background: #eef6f4;
+  background: #f0fdfa;
   border-color: #0f766e;
+  color: #0f766e;
+  font-weight: 600;
 }
 
-.progress-block {
-  display: grid;
-  gap: 8px;
-}
+/* ── Progress ── */
+.progress-block { display: grid; gap: 8px; }
 
 .progress-track {
   background: #e2e8f0;
   border-radius: 999px;
-  height: 10px;
+  height: 8px;
   overflow: hidden;
 }
 
 .progress-bar {
-  background: #0f766e;
+  background: linear-gradient(90deg, #0f766e, #0d9488);
   height: 100%;
-  transition: width 0.25s ease;
+  transition: width .3s ease;
 }
 
 .progress-block p,
-.error-message {
-  margin: 0;
-}
+.error-message { margin: 0; font-size: 13px; }
 
-.error-message {
-  color: #b91c1c;
-}
+.progress-block p { color: #64748b; }
+.error-message    { color: #dc2626; }
 
-button {
-  background: #0f766e;
+/* ── Submit button ── */
+button[type="submit"] {
+  background: linear-gradient(135deg, #0f766e, #0d9488);
   border: 0;
-  border-radius: 8px;
-  color: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(15,118,110,.28);
+  color: #fff;
   cursor: pointer;
-  font: inherit;
-  font-weight: 700;
-  min-height: 46px;
-  transition:
-    background 0.18s ease,
-    transform 0.18s ease;
+  font: 700 16px/1 inherit;
+  letter-spacing: .02em;
+  min-height: 50px;
+  transition: opacity .18s, transform .18s, box-shadow .18s;
 }
 
-button:hover:not(:disabled) {
-  background: #115e59;
-  transform: translateY(-1px);
+button[type="submit"]:hover:not(:disabled) {
+  box-shadow: 0 6px 22px rgba(15,118,110,.35);
+  transform: translateY(-2px);
 }
 
-button:disabled {
+button[type="submit"]:disabled {
   cursor: wait;
-  opacity: 0.7;
+  opacity: 0.65;
 }
 
+/* ── Responsive ── */
 @media (max-width: 860px) {
-  .home-page {
-    padding: 14px;
-  }
+  .home-page { padding: 20px 14px 40px; }
 
   .hero-panel,
-  .grid-2 {
-    grid-template-columns: 1fr;
-  }
+  .grid-2 { grid-template-columns: 1fr; }
 
-  h1 {
-    font-size: 34px;
-  }
+  h1 { font-size: 36px; }
+  .features { display: none; }
 
-  .form-heading {
-    align-items: start;
-    display: grid;
-  }
+  .form-heading { align-items: start; display: grid; }
 }
 </style>

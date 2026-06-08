@@ -122,16 +122,21 @@ class AmapMCPToolset:
             }
 
         tool = self.expanded_tools.get(tool_name)
+        if tool is None:
+            return await self._rest_fallback(
+                tool_name,
+                arguments,
+                fallback_status="missing_tool",
+                fallback_message=(
+                    f"MCP tool `{tool_name}` was not expanded by the server; "
+                    "used bounded Amap REST fallback instead."
+                ),
+            )
 
         try:
             async with self._call_semaphore:
-                call = (
-                    lambda: tool.run(arguments)
-                    if tool is not None
-                    else self._run_direct_tool(tool_name, arguments)
-                )
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(call),
+                    asyncio.to_thread(lambda: tool.run(arguments)),
                     timeout=self.settings.amap_mcp_tool_timeout,
                 )
         except asyncio.TimeoutError:
@@ -395,20 +400,6 @@ class AmapMCPToolset:
             "LC_ALL": "C.UTF-8",
             "NO_COLOR": "1",
         }
-
-    def _run_direct_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        from hello_agents.protocols.mcp.client import MCPClient
-
-        async def call() -> Any:
-            async with MCPClient(
-                self.settings.amap_mcp_command,
-                env=self._mcp_env(),
-            ) as client:
-                return await client.call_tool(tool_name, arguments)
-
-        with patch("builtins.print", lambda *args, **kwargs: None):
-            return asyncio.run(call())
-
 
 class MCPClient(AmapMCPToolset):
     """Backward-compatible name for the project MCP boundary."""

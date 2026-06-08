@@ -229,8 +229,11 @@ class LLMService:
                         "for a travel itinerary. Prefer authentic local variety and "
                         "cover selected preferences as OR intents. Avoid choosing only "
                         "museums for culture; mix historic streets, landmarks, nature, "
-                        "viewpoints, and food streets when available. Only use names "
-                        "from the provided candidates."
+                        "viewpoints, and food streets when available. Strongly prefer "
+                        "places that are representative for first-time out-of-town "
+                        "visitors, city landmarks, iconic viewpoints, historic districts, "
+                        "and well-known scenic areas over ordinary neighborhood parks. "
+                        "Only use names from the provided candidates."
                     ),
                 },
                 {

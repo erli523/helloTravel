@@ -15,7 +15,9 @@ from app.agents.hotel_agent import HotelAgent
 from app.agents.itinerary_agent import PlannerAgent
 from app.agents.trip_planner_agent import TripPlannerAgent
 from app.agents.weather_agent import WeatherQueryAgent
+from app.config import Settings
 from app.models.travel import Attraction, DayPlan, Hotel, Location, Meal, ScheduleItem, TravelPlanRequest, TripPlan, WeatherInfo
+from app.services.mcp_client import AmapMCPToolset
 from app.services.trip_image_service import TripImageService
 from app.main import app
 
@@ -198,6 +200,27 @@ def test_attraction_agent_rejects_cross_city_pois() -> None:
     assert not agent._location_matches_city(Location(longitude=121.473701, latitude=31.230416), "重庆")
 
 
+
+def test_mcp_missing_expanded_tool_uses_bounded_fallback() -> None:
+    import asyncio
+
+    settings = Settings(
+        AMAP_MCP_ENABLED=True,
+        AMAP_REST_PREFERRED=False,
+        AMAP_API_KEY="",
+    )
+    toolset = AmapMCPToolset(settings=settings, tool=object(), expanded_tools={})
+
+    result = asyncio.run(
+        toolset.call_tool(
+            "amap_maps_text_search",
+            {"keywords": "attraction", "city": "test-city"},
+        )
+    )
+
+    assert result["status"] == "missing_tool"
+    assert "not expanded" in result["message"]
+
 class FakeAttractionLLM:
     class Settings:
         agent_response_timeout = 5
@@ -266,7 +289,7 @@ def test_attraction_agent_uses_llm_candidate_ranking_before_diversity() -> None:
         Attraction(
             name="Old Street",
             address="Test",
-            location=Location(longitude=1, latitude=1),
+            location=Location(longitude=1.01, latitude=1.01),
             visit_duration=90,
             description="Old Street",
             category="culture",
@@ -275,7 +298,7 @@ def test_attraction_agent_uses_llm_candidate_ranking_before_diversity() -> None:
         Attraction(
             name="River Park",
             address="Test",
-            location=Location(longitude=1, latitude=1),
+            location=Location(longitude=1.02, latitude=1.02),
             visit_duration=90,
             description="River Park",
             category="culture",
@@ -298,6 +321,28 @@ def test_attraction_agent_uses_llm_candidate_ranking_before_diversity() -> None:
 
     assert [item.name for item in ranked[:3]] == ["River Park", "Old Street", "Museum"]
     assert [item.name for item in selected[:3]] == ["River Park", "Old Street", "Museum"]
+
+
+def test_attraction_agent_dedupes_same_complex_by_coordinates_and_name() -> None:
+    agent = AttractionSearchAgent()
+    first = Attraction(
+        name="洪崖洞夜景观景台",
+        address="重庆",
+        location=Location(longitude=106.5790, latitude=29.5622),
+        visit_duration=90,
+        description="night view",
+    )
+    second = Attraction(
+        name="洪崖洞民俗风貌区",
+        address="重庆",
+        location=Location(longitude=106.5791, latitude=29.5621),
+        visit_duration=120,
+        description="old street",
+    )
+
+    deduped = agent._dedupe_semantic_attractions([first, second])
+
+    assert [item.name for item in deduped] == ["洪崖洞夜景观景台"]
 
 
 def test_food_agent_assigns_meal_types_semantically() -> None:
@@ -495,6 +540,64 @@ def test_planner_quality_gate_repairs_overlapping_timeline() -> None:
     assert repaired[2].time >= repaired[1].end_time
     for first, second in zip(repaired, repaired[1:]):
         assert _minutes(first.end_time) <= _minutes(second.time)
+
+
+def test_default_schedule_moves_evening_attraction_after_dinner() -> None:
+    planner = PlannerAgent()
+    request = TravelPlanRequest(
+        city="重庆",
+        start_date="2026-06-07",
+        end_date="2026-06-07",
+    )
+    attraction = Attraction(
+        name="洪崖洞夜景观景台",
+        address="重庆",
+        location=Location(longitude=106.579, latitude=29.562),
+        visit_duration=90,
+        description="夜景",
+    )
+    timeline = planner._build_default_schedule(
+        request,
+        [attraction],
+        [
+            Meal(type="lunch", name="Lunch", estimated_cost=50),
+            Meal(type="dinner", name="Dinner", estimated_cost=80),
+        ],
+    )
+    night_item = next(item for item in timeline if item.item_type == "attraction")
+
+    assert _minutes(night_item.time) >= 18 * 60
+    assert "夜间" in night_item.activity
+
+
+def test_geo_meals_avoid_cross_day_duplicate_lunches() -> None:
+    planner = PlannerAgent()
+    request = TravelPlanRequest(
+        city="重庆",
+        start_date="2026-06-07",
+        end_date="2026-06-09",
+    )
+    meals = [
+        Meal(type="lunch", name="Lunch A", location=Location(longitude=1, latitude=1)),
+        Meal(type="lunch", name="Lunch B", location=Location(longitude=1.01, latitude=1)),
+        Meal(type="dinner", name="Dinner A", location=Location(longitude=1, latitude=1)),
+        Meal(type="dinner", name="Dinner B", location=Location(longitude=1.01, latitude=1)),
+    ]
+    attractions = [
+        Attraction(
+            name="A",
+            address="A",
+            location=Location(longitude=1, latitude=1),
+            visit_duration=60,
+            description="A",
+        )
+    ]
+
+    first_day = planner._build_geo_meals(request, meals, attractions, 0)
+    second_day = planner._build_geo_meals(request, meals, attractions, 1)
+
+    assert next(meal.name for meal in first_day if meal.type == "lunch") == "Lunch A"
+    assert next(meal.name for meal in second_day if meal.type == "lunch") == "Lunch B"
 
 
 class FakeRouteTools:
@@ -737,6 +840,302 @@ def test_planner_react_loop_drives_route_action_from_observation() -> None:
     )
 
 
+def test_planner_observes_duplicate_attractions_and_sparse_days() -> None:
+    planner = PlannerAgent()
+    request = TravelPlanRequest(
+        city="重庆",
+        start_date="2026-06-07",
+        end_date="2026-06-08",
+        transportation="public transit + walking",
+    )
+    first = Attraction(
+        name="洪崖洞夜景观景台",
+        address="重庆",
+        location=Location(longitude=106.5790, latitude=29.5622),
+        visit_duration=90,
+        description="night",
+    )
+    second = Attraction(
+        name="洪崖洞民俗风貌区",
+        address="重庆",
+        location=Location(longitude=106.5791, latitude=29.5621),
+        visit_duration=90,
+        description="street",
+    )
+    days = [
+        DayPlan(
+            date=request.start_date,
+            day_index=0,
+            description="day1",
+            transportation=request.transportation,
+            accommodation="",
+            attractions=[first],
+            meals=[],
+            timeline=[],
+        ),
+        DayPlan(
+            date=request.end_date,
+            day_index=1,
+            description="day2",
+            transportation=request.transportation,
+            accommodation="",
+            attractions=[second],
+            meals=[],
+            timeline=[],
+        ),
+    ]
+
+    issues = planner._observe_plan_quality(request, days)
+    codes = {issue["code"] for issue in issues}
+
+    assert "cross_day_duplicate_attraction" in codes
+    assert "sparse_day" in codes
+
+
+def test_react_loop_replaces_cross_day_duplicate_attraction() -> None:
+    import asyncio
+
+    planner = PlannerAgent()
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-08",
+        transportation="public transit + walking",
+    )
+    first = Attraction(
+        name="River Night View Deck",
+        address="Test",
+        location=Location(longitude=106.5790, latitude=29.5622),
+        visit_duration=90,
+        description="night view",
+    )
+    duplicate = Attraction(
+        name="River Folk Block",
+        address="Test",
+        location=Location(longitude=106.5791, latitude=29.5621),
+        visit_duration=90,
+        description="same complex",
+    )
+    replacement = Attraction(
+        name="Mountain History Street",
+        address="Test",
+        location=Location(longitude=106.6200, latitude=29.5800),
+        visit_duration=90,
+        description="different area",
+    )
+    days = [
+        DayPlan(
+            date=request.start_date,
+            day_index=0,
+            description="day1",
+            transportation=request.transportation,
+            accommodation="",
+            attractions=[first],
+            meals=[],
+            timeline=[],
+        ),
+        DayPlan(
+            date=request.end_date,
+            day_index=1,
+            description="day2",
+            transportation=request.transportation,
+            accommodation="",
+            attractions=[duplicate],
+            meals=[],
+            timeline=[],
+        ),
+    ]
+
+    repaired_days, notes = asyncio.run(
+        planner._run_react_planning_loop(
+            request,
+            days,
+            candidate_attractions=[first, duplicate, replacement],
+        )
+    )
+    remaining_codes = {
+        issue["code"] for issue in planner._observe_plan_quality(request, repaired_days)
+    }
+
+    assert repaired_days[1].attractions[0].name == "Mountain History Street"
+    assert "cross_day_duplicate_attraction" not in remaining_codes
+    assert any("Replaced duplicate" in note for note in notes)
+
+
+def test_react_loop_fills_afternoon_gap_before_evening_attraction() -> None:
+    import asyncio
+
+    planner = PlannerAgent()
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-07",
+        transportation="public transit + walking",
+    )
+    morning = Attraction(
+        name="Old Street",
+        address="Test",
+        location=Location(longitude=106.50, latitude=29.50),
+        visit_duration=90,
+        description="historic street",
+    )
+    evening = Attraction(
+        name="River Night View",
+        address="Test",
+        location=Location(longitude=106.55, latitude=29.52),
+        visit_duration=90,
+        description="night view",
+    )
+    afternoon = Attraction(
+        name="Nearby Culture Park",
+        address="Test",
+        location=Location(longitude=106.51, latitude=29.505),
+        visit_duration=90,
+        description="daytime culture walk",
+    )
+    meals = [
+        Meal(type="lunch", name="Lunch", estimated_cost=50),
+        Meal(type="dinner", name="Dinner", estimated_cost=80),
+    ]
+    day = DayPlan(
+        date=request.start_date,
+        day_index=0,
+        description="day",
+        transportation=request.transportation,
+        accommodation="",
+        attractions=[morning, evening],
+        meals=meals,
+        timeline=planner._build_default_schedule(request, [morning, evening], meals),
+    )
+
+    repaired_days, notes = asyncio.run(
+        planner._run_react_planning_loop(
+            request,
+            [day],
+            candidate_attractions=[morning, evening, afternoon],
+        )
+    )
+
+    assert [item.name for item in repaired_days[0].attractions] == [
+        "Old Street",
+        "Nearby Culture Park",
+        "River Night View",
+    ]
+    assert any("Nearby Culture Park" in note for note in notes)
+
+
+def test_react_loop_adds_local_experience_when_candidates_are_exhausted() -> None:
+    import asyncio
+
+    planner = PlannerAgent()
+    request = TravelPlanRequest(
+        city="Chengdu",
+        start_date="2026-06-08",
+        end_date="2026-06-08",
+        transportation="public transit + walking",
+    )
+    attraction = Attraction(
+        name="Jinli Old Street",
+        address="Chengdu",
+        location=Location(longitude=104.047, latitude=30.642),
+        visit_duration=120,
+        description="historic street",
+    )
+    meals = [
+        Meal(type="lunch", name="Lunch", estimated_cost=50),
+        Meal(type="dinner", name="Dinner", estimated_cost=90),
+    ]
+    day = DayPlan(
+        date=request.start_date,
+        day_index=0,
+        description="day",
+        transportation=request.transportation,
+        accommodation="",
+        attractions=[attraction],
+        meals=meals,
+        timeline=planner._build_default_schedule(request, [attraction], meals),
+    )
+
+    repaired_days, notes = asyncio.run(
+        planner._run_react_planning_loop(
+            request,
+            [day],
+            candidate_attractions=[attraction],
+        )
+    )
+    repaired_day = repaired_days[0]
+
+    assert len(repaired_day.attractions) == 3
+    assert any(item.category == "就近体验" for item in repaired_day.attractions)
+    assert not any(
+        item.item_type in {"free", "rest"}
+        and _minutes(item.end_time) - _minutes(item.time) >= 120
+        for item in repaired_day.timeline
+    )
+    assert any("activity candidate" in note for note in notes)
+
+
+def test_react_loop_replaces_duplicate_meal() -> None:
+    import asyncio
+
+    planner = PlannerAgent()
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-08",
+        transportation="public transit + walking",
+    )
+    attraction = Attraction(
+        name="A",
+        address="A",
+        location=Location(longitude=106.50, latitude=29.50),
+        visit_duration=90,
+        description="A",
+    )
+    lunch_a = Meal(type="lunch", name="Lunch A", estimated_cost=50)
+    lunch_b = Meal(type="lunch", name="Lunch B", estimated_cost=55)
+    dinner_a = Meal(type="dinner", name="Dinner A", estimated_cost=80)
+    dinner_b = Meal(type="dinner", name="Dinner B", estimated_cost=85)
+    days = [
+        DayPlan(
+            date=request.start_date,
+            day_index=0,
+            description="day1",
+            transportation=request.transportation,
+            accommodation="",
+            attractions=[attraction],
+            meals=[lunch_a, dinner_a],
+            timeline=[],
+        ),
+        DayPlan(
+            date=request.end_date,
+            day_index=1,
+            description="day2",
+            transportation=request.transportation,
+            accommodation="",
+            attractions=[attraction],
+            meals=[lunch_a, dinner_a],
+            timeline=[],
+        ),
+    ]
+
+    repaired_days, notes = asyncio.run(
+        planner._run_react_planning_loop(
+            request,
+            days,
+            candidate_attractions=[],
+            candidate_meals=[lunch_a, lunch_b, dinner_a, dinner_b],
+        )
+    )
+
+    assert next(meal.name for meal in repaired_days[1].meals if meal.type == "lunch") == "Lunch B"
+    assert next(meal.name for meal in repaired_days[1].meals if meal.type == "dinner") == "Dinner B"
+    assert "duplicate_meal" not in {
+        issue["code"] for issue in planner._observe_plan_quality(request, repaired_days)
+    }
+    assert any("Replaced duplicate lunch" in note for note in notes)
+
+
 class FakeReactLLM:
     available = True
 
@@ -958,7 +1357,12 @@ def test_planner_keeps_schedule_continuous_and_consistent() -> None:
     plan = asyncio.run(_build_continuity_plan())
 
     for day in plan.days:
-        assert len(day.attractions) <= 2
+        formal_attractions = [
+            attraction
+            for attraction in day.attractions
+            if attraction.category != "就近体验"
+        ]
+        assert len(formal_attractions) <= 2
         scheduled_attractions = {
             item.location for item in day.timeline if item.item_type == "attraction"
         }

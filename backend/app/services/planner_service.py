@@ -31,6 +31,7 @@ class PlannerService:
         )
         if pending:
             plan_task.cancel()
+            await self._drain_cancelled_task(plan_task)
             plan = await self._create_local_fallback_plan(request)
             plan.overall_suggestions += (
                 "\n\n外部服务响应时间过长，系统已使用本地候选数据生成可用行程；"
@@ -47,6 +48,13 @@ class PlannerService:
                 f"· {w}" for w in warnings
             )
         return plan
+
+    async def _drain_cancelled_task(self, task: asyncio.Task) -> None:
+        """Give a timed-out planning task a small window to release resources."""
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            return
 
     async def _create_local_fallback_plan(self, request: TravelPlanRequest) -> TripPlan:
         attraction_agent = AttractionSearchAgent()

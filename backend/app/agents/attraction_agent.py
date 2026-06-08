@@ -8,6 +8,7 @@ from typing import Any
 from app.agents.base_agent import AgentResult, AgentTrace, BaseAgent
 from app.agents.prompts import ATTRACTION_AGENT_PROMPT
 from app.models.travel import Attraction, Location, TravelPlanRequest
+from app.utils.geo import geo_distance_km
 
 
 CITY_CENTERS: dict[str, tuple[float, float]] = {
@@ -226,9 +227,9 @@ class AttractionSearchAgent(BaseAgent):
             detail_results = await self._fetch_detail_results(tool_results)
 
         target_count = max(
-            6,
+            8,
             request.days_count
-            * (2 if request.transportation == "public transit + walking" else 3),
+            * (3 if request.transportation == "public transit + walking" else 4),
         )
         attractions = self._attractions_from_details(detail_results, keywords, request.city)
         attractions.extend(
@@ -248,6 +249,7 @@ class AttractionSearchAgent(BaseAgent):
             attractions=attractions,
             target_count=target_count,
         )
+        attractions = self._dedupe_semantic_attractions(attractions)
         attractions = self._diversify_attractions(
             attractions=attractions,
             preferences=preferences,
@@ -383,7 +385,8 @@ class AttractionSearchAgent(BaseAgent):
         except (AttributeError, asyncio.TimeoutError):
             return attractions
 
-        return self._apply_llm_attraction_order(attractions, ranked_names)
+        ordered = self._apply_llm_attraction_order(attractions, ranked_names)
+        return self._dedupe_semantic_attractions(ordered)
 
     @staticmethod
     def _apply_llm_attraction_order(
@@ -405,6 +408,40 @@ class AttractionSearchAgent(BaseAgent):
 
         ordered.extend(item for item in attractions if item.name not in selected_names)
         return ordered or attractions
+
+    def _dedupe_semantic_attractions(self, attractions: list[Attraction]) -> list[Attraction]:
+        """Remove near-duplicate POIs that describe the same attraction complex."""
+
+        selected: list[Attraction] = []
+        for attraction in attractions:
+            if any(self._same_attraction_complex(attraction, item) for item in selected):
+                continue
+            selected.append(attraction)
+        return selected
+
+    def _same_attraction_complex(self, first: Attraction, second: Attraction) -> bool:
+        distance = self._distance_km(
+            first.location.longitude,
+            first.location.latitude,
+            second.location.longitude,
+            second.location.latitude,
+        )
+        if distance <= 0.12:
+            return True
+        first_key = self._canonical_attraction_name(first.name)
+        second_key = self._canonical_attraction_name(second.name)
+        return bool(first_key and second_key and (first_key in second_key or second_key in first_key))
+
+    @staticmethod
+    def _canonical_attraction_name(name: str) -> str:
+        noise = (
+            "景区", "景点", "夜景", "观景台", "民俗风貌区", "风貌区", "游客中心",
+            "北站", "南站", "入口", "出口", "广场", "公园",
+        )
+        result = name.strip()
+        for token in noise:
+            result = result.replace(token, "")
+        return result.strip()
 
     def _select_keywords(self, preferences: list[str]) -> list[str]:
         """Expand user preferences as OR-style search intents, not one narrow query."""
@@ -791,18 +828,7 @@ class AttractionSearchAgent(BaseAgent):
 
     @staticmethod
     def _distance_km(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
-        import math
-
-        radius = 6371.0
-        lat1_r = math.radians(lat1)
-        lat2_r = math.radians(lat2)
-        dlat = math.radians(lat2 - lat1)
-        dlng = math.radians(lng2 - lng1)
-        h = (
-            math.sin(dlat / 2) ** 2
-            + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlng / 2) ** 2
-        )
-        return radius * 2 * math.asin(math.sqrt(h))
+        return geo_distance_km(lng1, lat1, lng2, lat2)
 
     def _attraction_from_payload(
         self,
@@ -823,10 +849,7 @@ class AttractionSearchAgent(BaseAgent):
             address=str(payload.get("address") or ""),
             location=location,
             visit_duration=120,
-            description=(
-                f"{category} in {payload.get('city') or 'the destination'}. "
-                f"Matched keywords: {', '.join(keywords)}."
-            ),
+            description=f"{payload.get('city') or '目的地'}的{category}类旅游地点。",
             category=category,
             rating=rating,
             image_url=photos.get("url") or None,
@@ -956,7 +979,7 @@ class AttractionSearchAgent(BaseAgent):
                     latitude=center_latitude + latitude_offset,
                 ),
                 visit_duration=duration,
-                description=f"{description} Matched keywords: {', '.join(keywords)}.",
+                description=description,
                 category=category,
                 rating=4.5 + index * 0.1,
                 image_url=None,

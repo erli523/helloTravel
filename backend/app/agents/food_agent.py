@@ -3,7 +3,6 @@
 import asyncio
 import json
 import re
-from itertools import cycle
 from typing import Any
 
 from app.agents.base_agent import AgentResult, AgentTrace, BaseAgent
@@ -169,9 +168,8 @@ class FoodRecommendationAgent(BaseAgent):
         )
 
     def _meals_from_details(self, detail_results: list[dict[str, Any]]) -> list[Meal]:
-        meal_types = cycle(["lunch", "dinner", "snack"])
         meals: list[Meal] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for result in detail_results:
             if result.get("status") != "ok":
                 continue
@@ -179,21 +177,52 @@ class FoodRecommendationAgent(BaseAgent):
             if not self._looks_like_food_poi(payload):
                 continue
             name = str(payload.get("name") or "")
-            if not name or name in seen:
+            if not name:
                 continue
             location = self._parse_location(payload.get("location"))
-            seen.add(name)
-            meals.append(
-                Meal(
-                    type=next(meal_types),
-                    name=name,
-                    address=str(payload.get("address") or ""),
-                    location=location,
-                    description=str(payload.get("type") or "local food"),
-                    estimated_cost=self._estimate_cost(payload),
+            for meal_type in self._meal_types_for_poi(payload):
+                key = (name, meal_type)
+                if key in seen:
+                    continue
+                seen.add(key)
+                meals.append(
+                    Meal(
+                        type=meal_type,
+                        name=name,
+                        address=str(payload.get("address") or ""),
+                        location=location,
+                        description=str(payload.get("type") or "local food"),
+                        estimated_cost=self._estimate_cost(payload),
+                    )
                 )
-            )
         return meals
+
+    def _meal_types_for_poi(self, payload: dict[str, Any]) -> list[str]:
+        text = " ".join(
+            str(payload.get(key) or "") for key in ("name", "type", "typecode", "address")
+        )
+        snack_tokens = (
+            "小吃", "零食", "茶", "咖啡", "甜品", "面包", "糕点", "奶茶",
+            "冰粉", "豆花", "粉", "面", "快餐",
+        )
+        dinner_tokens = (
+            "火锅", "烧烤", "烤肉", "大排档", "酒楼", "江湖菜", "串串",
+            "烤鱼", "海鲜", "夜宵",
+        )
+        lunch_tokens = ("简餐", "便餐", "午餐", "食堂", "快餐", "面馆", "粉店")
+
+        types: list[str] = []
+        if any(token in text for token in lunch_tokens):
+            types.append("lunch")
+        if any(token in text for token in dinner_tokens):
+            types.append("dinner")
+        if any(token in text for token in snack_tokens):
+            types.append("snack")
+        if not types:
+            types = ["lunch", "dinner"]
+        if types == ["snack"] and any(token in text for token in ("面", "粉", "豆花", "快餐")):
+            types.insert(0, "lunch")
+        return list(dict.fromkeys(types))
 
     def _looks_like_food_poi(self, poi: dict[str, Any]) -> bool:
         text = " ".join(
@@ -244,16 +273,18 @@ class FoodRecommendationAgent(BaseAgent):
                 [f"{request.city}特色午餐", f"{request.city}招牌晚餐"],
             ),
         )
-        meal_types = cycle(["lunch", "dinner", "snack"])
-        return [
-            Meal(
-                type=next(meal_types),
-                name=name,
-                description=f"{request.city}当地特色，强烈推荐。",
-                estimated_cost=70,
-            )
-            for name in names[:6]
-        ]
+        meals: list[Meal] = []
+        for name in names[:6]:
+            for meal_type in self._meal_types_for_poi({"name": name, "type": "local food"}):
+                meals.append(
+                    Meal(
+                        type=meal_type,
+                        name=name,
+                        description=f"{request.city}当地特色，推荐作为{meal_type}候选。",
+                        estimated_cost=70,
+                    )
+                )
+        return meals
 
     def _source_summary(
         self,

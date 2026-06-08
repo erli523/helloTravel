@@ -117,18 +117,162 @@ class PlannerAgent(BaseAgent):
         if llm is None or not getattr(llm, "available", False):
             return None
 
-        context = self._format_planning_context(request, attractions, weather_info, hotels, meals)
+        context = self._format_assignment_context(request, attractions, weather_info, hotels, meals)
         timeout = getattr(getattr(llm, "settings", None), "llm_timeout", 60.0)
         try:
-            return await asyncio.wait_for(
-                llm.generate_itinerary(
-                    system_prompt=PLANNER_ITINERARY_PROMPT,
+            assignment = await asyncio.wait_for(
+                llm.assign_itinerary_days(
+                    system_prompt=self._assignment_prompt(),
                     planning_context=context,
                 ),
                 timeout=timeout,
             )
+            if not assignment:
+                return None
+
+            schedule_tasks = [
+                llm.generate_day_schedule(
+                    day_context=self._format_day_schedule_context(
+                        request=request,
+                        day_data=day_data,
+                        attractions=attractions,
+                        hotels=hotels,
+                        meals=meals,
+                        weather_info=weather_info,
+                    )
+                )
+                for day_data in (assignment.get("days") or [])[: request.days_count]
+            ]
+            if schedule_tasks:
+                schedules = await asyncio.wait_for(
+                    asyncio.gather(*schedule_tasks, return_exceptions=True),
+                    timeout=timeout,
+                )
+                for day_data, schedule in zip(assignment.get("days") or [], schedules):
+                    if isinstance(schedule, list) and schedule:
+                        day_data["schedule"] = schedule
+            return assignment
         except (asyncio.TimeoutError, Exception):
             return None
+
+    @staticmethod
+    def _assignment_prompt() -> str:
+        return """You are PlannerAgent. Assign attractions, meals, and hotel for a trip.
+Return only compact JSON:
+{
+  "days": [
+    {
+      "day_index": 0,
+      "date": "YYYY-MM-DD",
+      "description": "one sentence theme",
+      "attraction_names": ["exact candidate attraction name"],
+      "lunch_name": "exact candidate meal name or null",
+      "dinner_name": "exact candidate meal name or null",
+      "weather_note": "brief weather-aware note",
+      "day_notes": "route feasibility note"
+    }
+  ],
+  "hotel_name": "exact candidate hotel name or null",
+  "overall_suggestions": "100-200 Chinese characters",
+  "budget_assessment": "brief budget note"
+}
+Rules:
+- Use only exact names from the candidate lists.
+- Keep each day geographically coherent.
+- Prefer 2 attractions per day for public transit + walking.
+- Do not generate schedule/timeline in this step."""
+
+    def _format_assignment_context(
+        self,
+        request: TravelPlanRequest,
+        attractions: list[Attraction],
+        weather_info: list[WeatherInfo],
+        hotels: list[Hotel],
+        meals: list[Meal],
+    ) -> str:
+        lines: list[str] = []
+        preferences = "、".join(request.preferences) or "通用旅游"
+        lines += [
+            "【用户需求】",
+            f"目的地：{request.city}",
+            f"日期：{request.start_date} 至 {request.end_date}，共 {request.days_count} 天",
+            f"人数：{request.travelers}，预算档次：{request.budget_level}",
+            f"偏好：{preferences}，交通：{request.transportation}，住宿：{request.accommodation}",
+            "请只做每天的景点/餐厅/酒店分配，不要生成时间轴。",
+            "",
+            "【候选景点】",
+        ]
+        for i, att in enumerate(attractions[:14], 1):
+            rating = att.rating if att.rating is not None else "暂无"
+            lines.append(
+                f"{i}. {att.name} | {att.address} | 坐标({att.location.longitude:.4f},{att.location.latitude:.4f}) "
+                f"| 类别:{att.category} | 评分:{rating} | 游览:{att.visit_duration}分钟"
+            )
+
+        lines.append("")
+        lines.append("【天气】")
+        for i, w in enumerate(weather_info[: request.days_count], 1):
+            lines.append(
+                f"第{i}天 {w.date}: {w.day_weather}, {w.day_temp}/{w.night_temp}℃, {w.wind_direction}风{w.wind_power}"
+            )
+
+        lines.append("")
+        lines.append("【候选酒店】")
+        for i, hotel in enumerate(hotels[:8], 1):
+            lines.append(f"{i}. {hotel.name} | {hotel.address} | {hotel.price_range} | 评分:{hotel.rating}")
+
+        lines.append("")
+        lines.append("【候选餐厅】")
+        for i, meal in enumerate(meals[:16], 1):
+            addr = meal.address or "地址未知"
+            lines.append(f"{i}. {meal.name} | type={meal.type} | {addr} | 人均:{meal.estimated_cost}元")
+
+        return "\n".join(lines)
+
+    def _format_day_schedule_context(
+        self,
+        *,
+        request: TravelPlanRequest,
+        day_data: dict[str, Any],
+        attractions: list[Attraction],
+        hotels: list[Hotel],
+        meals: list[Meal],
+        weather_info: list[WeatherInfo],
+    ) -> str:
+        day_index = int(day_data.get("day_index") or 0)
+        selected_attractions = [
+            att for name in day_data.get("attraction_names") or []
+            if (att := self._find_attraction(str(name), attractions)) is not None
+        ]
+        lunch = self._find_meal_by_name(day_data.get("lunch_name"), meals)
+        dinner = self._find_meal_by_name(day_data.get("dinner_name"), meals)
+        hotel = self._find_hotel(day_data.get("hotel_name"), hotels) or self._select_best_hotel(hotels, attractions)
+        weather = weather_info[day_index] if day_index < len(weather_info) else None
+
+        lines = [
+            f"Destination: {request.city}",
+            f"Date: {request.start_date + timedelta(days=day_index)}",
+            f"Transportation: {request.transportation}",
+            f"Theme: {day_data.get('description') or ''}",
+            f"Weather: {weather.day_weather if weather else 'unknown'}",
+            f"Hotel: {hotel.name if hotel else request.accommodation}",
+            "",
+            "Selected attractions in route order:",
+        ]
+        for att in self._order_route(selected_attractions, hotel):
+            lines.append(
+                f"- {att.name} | {att.address} | visit_duration={att.visit_duration}min "
+                f"| coord={att.location.longitude:.4f},{att.location.latitude:.4f}"
+            )
+        lines += [
+            "",
+            f"Lunch: {lunch.name if lunch else 'local lunch'} | {lunch.address if lunch else ''}",
+            f"Dinner: {dinner.name if dinner else 'local dinner'} | {dinner.address if dinner else ''}",
+            "",
+            "Return a JSON array only. Include breakfast at 08:30, departure, attractions, lunch, transit/rest, dinner. "
+            "Use HH:MM times, no overlaps, no item after 20:00.",
+        ]
+        return "\n".join(lines)
 
     def _format_planning_context(
         self,
@@ -851,16 +995,30 @@ class PlannerAgent(BaseAgent):
         except (AttributeError, ValueError):
             return None
 
+    def _normalize_schedule(self, schedule: list[ScheduleItem]) -> list[ScheduleItem]:
+        """Sort timeline items and drop reversed or out-of-day slots."""
+
+        cleaned: list[ScheduleItem] = []
+        for item in sorted(schedule, key=lambda entry: self._parse_time_minutes(entry.time) or 0):
+            start = self._parse_time_minutes(item.time)
+            end = self._parse_time_minutes(item.end_time)
+            if start is None or end is None:
+                continue
+            if start >= 20 * 60 or end <= start:
+                continue
+            if end > 20 * 60:
+                item = item.model_copy(update={"end_time": "20:00"})
+            cleaned.append(item)
+        return cleaned
+
     def _fill_schedule_gaps(self, schedule: list[ScheduleItem]) -> list[ScheduleItem]:
         """Insert practical rest/free-exploration blocks for long idle gaps."""
 
+        schedule = self._normalize_schedule(schedule)
         if len(schedule) < 2:
             return schedule
 
-        ordered = sorted(
-            schedule,
-            key=lambda item: self._parse_time_minutes(item.time) or 0,
-        )
+        ordered = schedule
         filled: list[ScheduleItem] = []
         for index, item in enumerate(ordered):
             filled.append(item)
@@ -873,14 +1031,14 @@ class PlannerAgent(BaseAgent):
                 continue
 
             gap = next_start - end
-            if gap < 90:
+            if gap < 20:
                 continue
 
-            item_type = "rest" if gap < 180 else "free"
-            activity = "周边慢游与咖啡休息" if gap < 180 else "周边街区慢游 / 返回酒店整备"
+            item_type = "rest" if gap < 120 else "free"
+            activity = "周边慢游与短暂休整" if gap < 120 else "周边街区慢游 / 返回酒店整备"
             notes = (
                 "避免两个正式项目之间空等，可在上一站附近补充休息、拍照或短距离闲逛。"
-                if gap < 180
+                if gap < 120
                 else "该空档较长，建议安排返回酒店整理、午休，或选择上一站附近的轻量街区活动。"
             )
             filled.append(
@@ -893,7 +1051,7 @@ class PlannerAgent(BaseAgent):
                     item_type=item_type,
                 )
             )
-        return filled
+        return self._normalize_schedule(filled)
 
     # ── Budget ────────────────────────────────────────────────────────────
 

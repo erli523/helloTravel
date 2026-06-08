@@ -9,8 +9,9 @@ os.environ.setdefault("LLM_ENABLED", "false")
 from fastapi.testclient import TestClient
 
 from app.agents.attraction_agent import AttractionSearchAgent
+from app.agents.food_agent import FoodRecommendationAgent
 from app.agents.itinerary_agent import PlannerAgent
-from app.models.travel import Attraction, DayPlan, Hotel, Location, Meal, TravelPlanRequest, TripPlan
+from app.models.travel import Attraction, DayPlan, Hotel, Location, Meal, ScheduleItem, TravelPlanRequest, TripPlan
 from app.services.trip_image_service import TripImageService
 from app.main import app
 
@@ -178,6 +179,145 @@ def test_attraction_agent_rejects_cross_city_pois() -> None:
 
     assert agent._location_matches_city(Location(longitude=106.551556, latitude=29.563009), "重庆")
     assert not agent._location_matches_city(Location(longitude=121.473701, latitude=31.230416), "重庆")
+
+
+def test_food_agent_assigns_meal_types_semantically() -> None:
+    agent = FoodRecommendationAgent()
+
+    hotpot_types = agent._meal_types_for_poi({"name": "老码头火锅", "type": "餐饮服务;火锅店"})
+    noodle_types = agent._meal_types_for_poi({"name": "重庆小面", "type": "餐饮服务;面馆"})
+    cafe_types = agent._meal_types_for_poi({"name": "山城咖啡甜品", "type": "餐饮服务;咖啡厅"})
+    restaurant_types = agent._meal_types_for_poi({"name": "本地菜馆", "type": "餐饮服务;中餐厅"})
+
+    assert hotpot_types == ["dinner"]
+    assert "lunch" in noodle_types
+    assert "snack" in cafe_types
+    assert restaurant_types == ["lunch", "dinner"]
+
+
+def test_schedule_gap_fill_and_time_safety() -> None:
+    planner = PlannerAgent()
+    schedule = [
+        ScheduleItem(
+            time="10:00",
+            end_time="11:00",
+            activity="A",
+            location="A",
+            notes="",
+            item_type="attraction",
+        ),
+        ScheduleItem(
+            time="11:10",
+            end_time="11:00",
+            activity="bad",
+            location="bad",
+            notes="",
+            item_type="rest",
+        ),
+        ScheduleItem(
+            time="11:30",
+            end_time="12:00",
+            activity="B",
+            location="B",
+            notes="",
+            item_type="attraction",
+        ),
+        ScheduleItem(
+            time="20:10",
+            end_time="21:00",
+            activity="late",
+            location="late",
+            notes="",
+            item_type="rest",
+        ),
+    ]
+
+    filled = planner._fill_schedule_gaps(schedule)
+
+    assert [item.activity for item in filled] == ["A", "周边慢游与短暂休整", "B"]
+    for item in filled:
+        assert _minutes(item.end_time) > _minutes(item.time)
+        assert _minutes(item.end_time) <= 20 * 60
+
+
+class FakeSplitLLM:
+    available = True
+
+    class Settings:
+        llm_timeout = 5
+
+    settings = Settings()
+
+    def __init__(self) -> None:
+        self.assigned = False
+        self.schedule_calls = 0
+
+    async def assign_itinerary_days(self, *, system_prompt: str, planning_context: str) -> dict:
+        self.assigned = True
+        return {
+            "days": [
+                {
+                    "day_index": 0,
+                    "date": "2026-06-07",
+                    "description": "test day",
+                    "attraction_names": ["A"],
+                    "lunch_name": "Lunch",
+                    "dinner_name": "Dinner",
+                }
+            ],
+            "hotel_name": "Hotel",
+            "overall_suggestions": "ok",
+        }
+
+    async def generate_day_schedule(self, *, day_context: str) -> list[dict]:
+        self.schedule_calls += 1
+        return [
+            {
+                "time": "10:00",
+                "end_time": "11:00",
+                "activity": "游览：A",
+                "location": "A",
+                "notes": "test",
+                "item_type": "attraction",
+            }
+        ]
+
+
+def test_planner_uses_split_llm_assignment_and_schedule() -> None:
+    import asyncio
+
+    fake_llm = FakeSplitLLM()
+    planner = PlannerAgent(llm_service=fake_llm)
+    request = TravelPlanRequest(
+        city="Test",
+        start_date="2026-06-07",
+        end_date="2026-06-07",
+        preferences=["culture"],
+    )
+    attractions = [
+        Attraction(
+            name="A",
+            address="A",
+            location=Location(longitude=1, latitude=1),
+            visit_duration=60,
+            description="A",
+            category="culture",
+        )
+    ]
+    hotel = Hotel(name="Hotel", location=Location(longitude=1, latitude=1), estimated_cost=300)
+    meals = [
+        Meal(type="lunch", name="Lunch", estimated_cost=50),
+        Meal(type="dinner", name="Dinner", estimated_cost=80),
+    ]
+
+    plan_data = asyncio.run(
+        planner._llm_plan_days(request, attractions, [], [hotel], meals)
+    )
+
+    assert fake_llm.assigned
+    assert fake_llm.schedule_calls == 1
+    assert plan_data is not None
+    assert plan_data["days"][0]["schedule"][0]["activity"] == "游览：A"
 
 
 def _minutes(value: str) -> int:

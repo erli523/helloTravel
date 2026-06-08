@@ -115,6 +115,76 @@ class LLMService:
 
         return self._parse_json_response(str(content))
 
+    async def assign_itinerary_days(
+        self,
+        *,
+        system_prompt: str,
+        planning_context: str,
+    ) -> dict[str, Any] | None:
+        """Ask the LLM only for attraction/meal/hotel assignment."""
+
+        if not self.available:
+            return None
+
+        payload = {
+            "model": self.settings.llm_model_id,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": planning_context},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1500,
+        }
+        content = await self._chat(
+            payload,
+            fallback="",
+            label="PlannerAgent.assign_itinerary_days",
+        )
+        if not content:
+            return None
+        return self._parse_json_response(content)
+
+    async def generate_day_schedule(
+        self,
+        *,
+        day_context: str,
+    ) -> list[dict[str, Any]] | None:
+        """Ask the LLM for one day's timeline only."""
+
+        if not self.available:
+            return None
+
+        payload = {
+            "model": self.settings.llm_model_id,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a travel schedule planner. Return only a JSON array. "
+                        "Each item must include time, end_time, activity, location, "
+                        "notes, and item_type. item_type must be one of attraction, "
+                        "meal, transit, rest. Keep the day between 08:30 and 20:00."
+                    ),
+                },
+                {"role": "user", "content": day_context},
+            ],
+            "temperature": 0.35,
+            "max_tokens": 900,
+        }
+        content = await self._chat(
+            payload,
+            fallback="",
+            label="PlannerAgent.generate_day_schedule",
+        )
+        if not content:
+            return None
+        parsed = self._parse_json_any_response(content)
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict) and isinstance(parsed.get("schedule"), list):
+            return [item for item in parsed["schedule"] if isinstance(item, dict)]
+        return None
+
     # ── Internal helpers ─────────────────────────────────────────────────
 
     async def _chat(
@@ -180,3 +250,37 @@ class LLMService:
             content[:300],
         )
         return None
+
+    def _parse_json_any_response(self, content: str) -> Any | None:
+        """Extract and parse a JSON object or array from an LLM response."""
+
+        stripped = content.strip()
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+
+        fence = re.search(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", content, re.DOTALL)
+        if fence:
+            try:
+                return json.loads(fence.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        start_candidates = [pos for pos in (content.find("{"), content.find("[")) if pos >= 0]
+        if not start_candidates:
+            return None
+        start = min(start_candidates)
+        opener = content[start]
+        closer = "}" if opener == "{" else "]"
+        end = content.rfind(closer)
+        if end <= start:
+            return None
+        try:
+            return json.loads(content[start : end + 1])
+        except json.JSONDecodeError:
+            logger.warning(
+                "Could not parse JSON from LLM response (first 300 chars): {}",
+                content[:300],
+            )
+            return None
